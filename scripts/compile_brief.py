@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from validate_project import (
-    LoadedDocument,
     ValidationError,
     cross_validate,
     load_document,
@@ -53,19 +52,38 @@ def compile_brief(asset: dict[str, Any], edit: dict[str, Any]) -> str:
     soft_preserve = _dedupe([*asset_soft, *edit_soft])
 
     output = edit.get("output", {})
+    edit_target_id = edit.get("execution", {}).get("edit_target_reference_id")
+    edit_target_line = None
+    if edit_target_id:
+        ref = reference_by_id[edit_target_id]
+        edit_target_line = f"{edit_target_id} | path={ref['path']}"
 
     lines = [
         f"ASSET: {asset['asset_id']}",
         f"OPERATION: {edit['operation']}",
-        "",
-        "TARGET:",
-        str(edit["target"]),
-        "",
-        "CHANGE:",
-        str(edit["change"]),
-        "",
-        "REFERENCE ROLES:",
     ]
+
+    if edit_target_line:
+        lines.extend(
+            [
+                "",
+                "EDIT TARGET:",
+                edit_target_line,
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "TARGET:",
+            str(edit["target"]),
+            "",
+            "CHANGE:",
+            str(edit["change"]),
+            "",
+            "REFERENCE ROLES:",
+        ]
+    )
     lines.extend(reference_lines or ["(none)"])
 
     lines.extend(["", "HARD PRESERVE:"])
