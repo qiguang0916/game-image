@@ -1,7 +1,7 @@
 ---
 name: game-image
-description: Reference-controlled game image director and execution harness for game assets. Use for generating, editing, repairing, or validating game prop, character, environment, UI, or 3D-modeling reference images where master references, local edits, consistency, bounded iteration, and visual QA matter. Backend-neutral; no local image model is required.
-version: 0.2.0
+description: Reference-controlled game image director and execution harness for game assets. Use for generating, editing, repairing, or validating game prop, character, environment, UI, or 3D-modeling reference images where master references, local edits, consistency, explicit edit targets, host action packets, bounded iteration, and visual QA matter. Backend-neutral; no local image model is required.
+version: 0.3.0
 ---
 
 # Game Image Director
@@ -14,14 +14,16 @@ Turn image generation from a one-shot prompt into a controlled game-asset produc
 resolve asset
   -> classify operation
   -> bind approved references
+  -> bind exact edit target
   -> compile locks + delta brief
+  -> emit Host Action Packet
   -> delegate to host imagegen
   -> inspect actual output
   -> Visual QA
   -> accept / bounded repair / bounded regeneration
 ~~~
 
-This skill does not replace the underlying image model. It owns production control around that model.
+This skill does not replace the image model. It owns production control around that model.
 
 ## Trigger
 
@@ -30,10 +32,11 @@ Use this skill when game-image production needs one or more of:
 - an approved Master Reference;
 - multiple references with different responsibilities;
 - identity, silhouette, geometry, part position, camera, material, or style continuity;
-- a local edit that should not redesign the rest of the image;
+- a local edit that must not redesign the rest of the image;
 - Blender / Unity / Unreal modeling references;
 - repeatable Visual QA;
-- automatic routing from QA failure to repair/regeneration.
+- automatic routing from QA failure to repair/regeneration;
+- a machine-readable next action for Codex/Agent execution.
 
 For disposable mood images with no continuity requirements, normal image generation is sufficient.
 
@@ -44,7 +47,7 @@ Read as needed:
 - `skills/asset-reference/SKILL.md` — Master Reference / Reference Atlas.
 - `skills/delta-edit/SKILL.md` — smallest-change routing.
 - `skills/visual-qa/SKILL.md` — hard/soft acceptance gates.
-- `skills/execution-loop/SKILL.md` — actual execution state machine.
+- `skills/execution-loop/SKILL.md` — state machine + host execution loop.
 
 Apply the detailed rules in `rules/`.
 
@@ -75,9 +78,29 @@ Choose exactly one:
 
 Do not regenerate the whole asset for one small failure.
 
-## 3. Bind the minimum sufficient reference set
+## 3. Bind the exact edit target
 
-Every selected reference must declare:
+For initial edit-like operations, the request must declare:
+
+~~~toml
+[execution]
+edit_target_reference_id = "ASSEMBLED_MASTER"
+~~~
+
+This is the image that will actually be modified.
+
+It is different from support references.
+
+Example:
+
+- `ASSEMBLED_MASTER` = edit target;
+- `HANDLE_L_OUTER_MASTER` = geometry/material support reference.
+
+Never make the host guess which image is the edit target.
+
+## 4. Bind the minimum sufficient reference set
+
+Every selected support reference must declare:
 
 - reference_id;
 - approved state;
@@ -100,7 +123,7 @@ Common roles:
 
 Authority is role-specific. A material reference does not automatically control geometry.
 
-## 4. Compile locks
+## 5. Compile locks
 
 Split constraints into:
 
@@ -123,64 +146,76 @@ Typical 3D reference locks:
 
 Continuity preferences where minor non-destructive drift may be acceptable.
 
-## 5. Compile the brief
-
-Use:
+## 6. Initialize the run
 
 ~~~bash
-python3 scripts/compile_brief.py <asset.toml> <edit.toml>
+python3 scripts/execution_loop.py init \
+  --asset <asset.toml> \
+  --edit <edit.toml> \
+  --output <run.json>
 ~~~
 
-For edits, describe the delta rather than re-describing the whole asset.
+## 7. Request the next Host Action Packet
 
-Do not introduce new design ideas outside the request.
+~~~bash
+python3 scripts/next_action.py \
+  --asset <asset.toml> \
+  --edit <edit.toml> \
+  --run <run.json>
+~~~
 
-## 6. Delegate image execution
+The packet is the deterministic contract for the host.
 
-Read `references/openai-imagegen-delegation.md`.
+Possible `action` values:
 
-When the host provides OpenAI/Codex `$imagegen`:
+- `imagegen_generate`
+- `imagegen_edit`
+- `visual_qa`
+- `deliver`
+- `report_blocked`
 
-- delegate actual image generation/editing to it;
-- use its built-in-first path;
+Read `references/host-action-protocol.md`.
+
+## 8. Delegate image execution
+
+When the packet says `imagegen_generate` or `imagegen_edit`:
+
+- read `references/openai-imagegen-delegation.md`;
+- when OpenAI/Codex `$imagegen` exists, delegate actual generation/editing to it;
+- use the packet's exact `edit_target`;
+- attach only packet `references`;
+- use packet `prompt` as the authoritative visual instruction;
+- do not invent a second competing prompt;
+- use the host's built-in-first path;
 - do not require an API key for normal built-in execution;
-- do not implement a duplicate OpenAI API client in game-image;
-- do not automatically switch to CLI/API fallback.
+- do not auto-switch to API/CLI fallback.
 
-For edit operations, prefer image editing against the correct source/master instead of fresh text-to-image.
-
-## 7. Persist execution state
-
-Use `skills/execution-loop/SKILL.md` and:
+After persisting the selected result:
 
 ~~~bash
-python3 scripts/execution_loop.py init ...
-python3 scripts/execution_loop.py mark-generated ...
-python3 scripts/execution_loop.py apply-qa ...
+python3 scripts/execution_loop.py mark-generated \
+  --run <run.json> \
+  --result <result-path>
 ~~~
 
-A generated image is not complete until it enters QA.
+Then request the next packet again.
 
-## 8. Inspect actual pixels
+## 9. Inspect actual pixels
 
-Compare the produced image with:
+When the packet says `visual_qa`, compare:
 
-- requested delta;
-- hard/soft locks;
-- selected masters;
-- expected view/framing.
+- the real generated result;
+- requested change;
+- hard/soft gates;
+- approved comparison references.
 
 Never infer QA success from the prompt.
 
 If the host cannot inspect the generated result, QA is BLOCKED.
 
-## 9. Visual QA
+## 10. Apply Visual QA
 
-Use `skills/visual-qa/SKILL.md`.
-
-Hard-gate failure overrides aesthetics.
-
-Statuses:
+QA statuses:
 
 - PASS
 - PASS_WITH_NOTES
@@ -188,21 +223,28 @@ Statuses:
 - REGENERATE_MAJOR
 - BLOCKED
 
-## 10. Bounded correction
+Apply:
+
+~~~bash
+python3 scripts/execution_loop.py apply-qa \
+  --run <run.json> \
+  --qa <qa.toml>
+~~~
+
+Then request the next Host Action Packet again.
+
+## 11. Bounded correction
 
 For `REPAIR_MINOR`:
 
-~~~bash
-python3 scripts/compile_repair.py <asset.toml> <edit.toml> <qa.toml>
-~~~
-
-Use the failed generated image as the edit target and correct only failed gates.
+- host packet uses the failed generated result as edit target;
+- correction is delta-only;
+- passed gates must not be disturbed.
 
 For `REGENERATE_MAJOR`:
 
-- discard the bad result as an edit source;
-- restart from the approved master/original target;
-- re-use the validated original brief.
+- host packet returns to the approved original edit target;
+- failed generated result must not be used as the source.
 
 Default budgets:
 
@@ -235,4 +277,5 @@ Validate:
 ~~~bash
 python3 scripts/validate_project.py
 python3 -m unittest discover -s tests -v
+python3 scripts/demo_e2e.py
 ~~~
