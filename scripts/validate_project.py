@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""Validate game-image TOML manifests with Python standard library only."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Iterable
+
+
+ALLOWED_DOCUMENT_TYPES = {"asset_manifest", "edit_request", "qa_report"}
+ALLOWED_REFERENCE_STATES = {"approved", "draft", "rejected", "superseded"}
+ALLOWED_OPERATIONS = {
+    "create",
+    "local_edit",
+    "structural_edit",
+    "variant",
+    "repair",
+    "regenerate",
+}
+ALLOWED_QA_STATUSES = {
+    "PASS",
+    "PASS_WITH_NOTES",
+    "REPAIR_MINOR",
+    "REGENERATE_MAJOR",
+    "BLOCKED",
+}
+ALLOWED_GATE_SEVERITIES = {"hard", "soft"}
+ALLOWED_GATE_STATUSES = {"PASS", "FAIL", "NOTE", "NOT_CHECKED"}
+
+
+@dataclass(frozen=True)
+class LoadedDocument:
+    path: Path
+    data: dict[str, Any]
+
+
+class ValidationError(ValueError):
+    pass
+
+
+def require(data: dict[str, Any], key: str, where: str) -> Any:
+    value = data.get(key)
+    if value is None or value == "" or value == []:
+        raise ValidationError(f"{where}: missing required field '{key}'")
+    return value
+
+
+def ensure_string_list(value: Any, where: str, allow_empty: bool = False) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(x, str) or not x.strip() for x in value):
+        raise ValidationError(f"{where}: expected a list of non-empty strings")
+    if not allow_empty and not value:
+        raise ValidationError(f"{where}: list must not be empty")
+    return value
+
+
+def validate_asset_manifest(data: dict[str, Any], path: Path) -> None:
+    where = str(path)
+    require(data, "asset_id", where)
+    primary_master = require(data, "primary_master", where)
+
+    locks = require(data, "locks", where)
+    if not isinstance(locks, dict):
+        raise ValidationError(f"{where}: locks must be a table")
+    ensure_string_list(locks.get("hard"), f"{where}: locks.hard")
+    ensure_string_list(locks.get("soft", []), f"{where}: locks.soft", allow_empty=True)
+
+    references = require(data, "references", where)
+    if not isinstance(references, list):
+        raise ValidationError(f"{where}: references must be an array of tables")
+
+    ids: set[str] = set()
+    approved = 0
+    for index, ref in enumerate(references):
+        rwhere = f"{where}: references[{index}]"
+        if not isinstance(ref, dict):
+            raise ValidationError(f"{rwhere}: expected table")
+        ref_id = require(ref, "id", rwhere)
+        if ref_id in ids:
+            raise ValidationError(f"{rwhere}: duplicate reference id '{ref_id}'")
+        ids.add(ref_id)
+        require(ref, "path", rwhere)
+        state = require(ref, "state", rwhere)
+        if state not in ALLOWED_REFERENCE_STATES:
+            raise ValidationError(f"{rwhere}: invalid state '{state}'")
+        if state == "approved":
+            approved += 1
+        roles = ensure_string_list(ref.get("roles"), f"{rwhere}: roles")
+        if len(set(roles)) != len(roles):
+            raise ValidationError(f"{rwhere}: duplicate reference roles")
+
+    if approved == 0:
+        raise ValidationError(f"{where}: at least one approved reference is required")
+    if primary_master not in ids:
+        raise ValidationError(
+            f"{where}: primary_master '{primary_master}' does not match a reference id"
+        )
+
+    qa = data.get("qa", {})
+    if qa:
+        if not isinstance(qa, dict):
+            raise ValidationError(f"{where}: qa must be a table")
+        passes = qa.get("max_repair_passes", 2)
+        if not isinstance(passes, int) or not 0 <= passes <= 5:
+            raise ValidationError(f"{where}: qa.max_repair_passes must be an integer 0..5")
+
+
+def validate_edit_request(data: dict[str, Any], path: Path) -> None:
+    where = str(path)
+    require(data, "request_id", where)
+    require(data, "asset_id", where)
+    operation = require(data, "operation", where)
+    if operation not in ALLOWED_OPERATIONS:
+        raise ValidationError(f"{where}: invalid operation '{operation}'")
+    require(data, "target", where)
+    require(data, "change", where)
+
+    preserve = require(data, "preserve", where)
+    if not isinstance(preserve, dict):
+        raise ValidationError(f"{where}: preserve must be a table")
+    hard = ensure_string_list(
+        preserve.get("hard", []),
+        f"{where}: preserve.hard",
+        allow_empty=operation in {"create", "regenerate"},
+    )
+    ensure_string_list(
+        preserve.get("soft", []),
+        f"{where}: preserve.soft",
+        allow_empty=True,
+    )
+    if operation == "local_edit" and not hard:
+        raise ValidationError(f"{where}: local_edit requires at least one hard preserve rule")
+
+    bindings = data.get("reference_bindings", [])
+    if operation != "create" and not bindings:
+        raise ValidationError(f"{where}: non-create operations require reference_bindings")
+    if not isinstance(bindings, list):
+        raise ValidationError(f"{where}: reference_bindings must be an array of tables")
+    seen: set[str] = set()
+    for index, binding in enumerate(bindings):
+        bwhere = f"{where}: reference_bindings[{index}]"
+        if not isinstance(binding, dict):
+            raise ValidationError(f"{bwhere}: expected table")
+        ref_id = require(binding, "reference_id", bwhere)
+        if ref_id in seen:
+            raise ValidationError(f"{bwhere}: duplicate reference binding '{ref_id}'")
+        seen.add(ref_id)
+        ensure_string_list(binding.get("roles"), f"{bwhere}: roles")
+
+
+def validate_qa_report(data: dict[str, Any], path: Path) -> None:
+    where = str(path)
+    require(data, "report_id", where)
+    require(data, "asset_id", where)
+    require(data, "request_id", where)
+    status = require(data, "status", where)
+    if status not in ALLOWED_QA_STATUSES:
+        raise ValidationError(f"{where}: invalid QA status '{status}'")
+
+    gates = require(data, "gates", where)
+    if not isinstance(gates, list):
+        raise ValidationError(f"{where}: gates must be an array of tables")
+
+    hard_gate_count = 0
+    failed_hard = False
+    for index, gate in enumerate(gates):
+        gwhere = f"{where}: gates[{index}]"
+        if not isinstance(gate, dict):
+            raise ValidationError(f"{gwhere}: expected table")
+        require(gate, "name", gwhere)
+        severity = require(gate, "severity", gwhere)
+        gate_status = require(gate, "status", gwhere)
+        if severity not in ALLOWED_GATE_SEVERITIES:
+            raise ValidationError(f"{gwhere}: invalid severity '{severity}'")
+        if gate_status not in ALLOWED_GATE_STATUSES:
+            raise ValidationError(f"{gwhere}: invalid status '{gate_status}'")
+        if severity == "hard":
+            hard_gate_count += 1
+            if gate_status != "PASS":
+                failed_hard = True
+
+    if hard_gate_count == 0:
+        raise ValidationError(f"{where}: at least one hard gate is required")
+    if status in {"PASS", "PASS_WITH_NOTES"} and failed_hard:
+        raise ValidationError(
+            f"{where}: PASS/PASS_WITH_NOTES cannot contain a non-PASS hard gate"
+        )
+
+    directives = data.get("repair_directives", [])
+    ensure_string_list(
+        directives,
+        f"{where}: repair_directives",
+        allow_empty=True,
+    )
+
+
+def validate_document(data: dict[str, Any], path: Path) -> None:
+    where = str(path)
+    document_type = require(data, "document_type", where)
+    if document_type not in ALLOWED_DOCUMENT_TYPES:
+        raise ValidationError(f"{where}: unknown document_type '{document_type}'")
+    if data.get("schema_version") != 1:
+        raise ValidationError(f"{where}: schema_version must be 1")
+
+    if document_type == "asset_manifest":
+        validate_asset_manifest(data, path)
+    elif document_type == "edit_request":
+        validate_edit_request(data, path)
+    elif document_type == "qa_report":
+        validate_qa_report(data, path)
+
+
+def load_document(path: Path) -> LoadedDocument:
+    with path.open("rb") as handle:
+        data = tomllib.load(handle)
+    if not isinstance(data, dict):
+        raise ValidationError(f"{path}: TOML root must be a table")
+    return LoadedDocument(path=path, data=data)
+
+
+def cross_validate(documents: list[LoadedDocument]) -> None:
+    assets: dict[str, dict[str, Any]] = {}
+    edits: dict[str, dict[str, Any]] = {}
+
+    for doc in documents:
+        dtype = doc.data["document_type"]
+        if dtype == "asset_manifest":
+            asset_id = doc.data["asset_id"]
+            if asset_id in assets:
+                raise ValidationError(f"duplicate asset manifest for '{asset_id}'")
+            assets[asset_id] = doc.data
+        elif dtype == "edit_request":
+            request_id = doc.data["request_id"]
+            if request_id in edits:
+                raise ValidationError(f"duplicate edit request '{request_id}'")
+            edits[request_id] = doc.data
+
+    for doc in documents:
+        data = doc.data
+        dtype = data["document_type"]
+
+        if dtype == "edit_request":
+            asset = assets.get(data["asset_id"])
+            if asset is None:
+                continue
+            valid_refs = {ref["id"] for ref in asset["references"]}
+            for binding in data.get("reference_bindings", []):
+                ref_id = binding["reference_id"]
+                if ref_id not in valid_refs:
+                    raise ValidationError(
+                        f"{doc.path}: reference_binding '{ref_id}' is not in asset '{data['asset_id']}'"
+                    )
+
+        elif dtype == "qa_report":
+            request = edits.get(data["request_id"])
+            if request is not None and request["asset_id"] != data["asset_id"]:
+                raise ValidationError(
+                    f"{doc.path}: QA asset_id does not match linked edit request"
+                )
+
+
+def iter_toml_paths(inputs: Iterable[str]) -> list[Path]:
+    paths: list[Path] = []
+    for raw in inputs:
+        path = Path(raw)
+        if path.is_dir():
+            paths.extend(sorted(path.rglob("*.toml")))
+        elif path.suffix == ".toml":
+            paths.append(path)
+        else:
+            raise ValidationError(f"{path}: expected a TOML file or directory")
+    return sorted(dict.fromkeys(paths))
+
+
+def validate_paths(paths: Iterable[Path]) -> list[LoadedDocument]:
+    documents: list[LoadedDocument] = []
+    for path in paths:
+        doc = load_document(path)
+        validate_document(doc.data, doc.path)
+        documents.append(doc)
+    cross_validate(documents)
+    return documents
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        default=["examples"],
+        help="TOML file(s) or directories. Default: examples",
+    )
+    args = parser.parse_args(argv)
+
+    try:
+        paths = iter_toml_paths(args.paths)
+        if not paths:
+            raise ValidationError("no TOML documents found")
+        documents = validate_paths(paths)
+    except (OSError, tomllib.TOMLDecodeError, ValidationError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    for doc in documents:
+        print(f"OK  {doc.path}")
+    print(f"Validated {len(documents)} document(s).")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

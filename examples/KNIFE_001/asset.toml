@@ -1,0 +1,83 @@
+document_type = "asset_manifest"
+schema_version = 1
+asset_id = "KNIFE_001"
+asset_type = "hero_prop_3d_reference"
+status = "active"
+primary_master = "ASSEMBLED_MASTER"
+
+[locks]
+hard = [
+  "blade broad silhouette",
+  "handle outer silhouette",
+  "three handle rivets",
+  "rivet centers",
+  "full-tang relationship",
+  "bolster geometry",
+  "butt-cap relationship",
+  "approved view/projection"
+]
+soft = [
+  "studio lighting softness",
+  "background tone",
+  "micro-scratch distribution"
+]
+
+[qa]
+max_repair_passes = 2
+hard_gate_policy = "reject_on_any_failure"
+
+[[references]]
+id = "ASSEMBLED_MASTER"
+path = "references/KNIFE_001_ASSEMBLED_MASTER.png"
+state = "approved"
+priority = 100
+roles = ["identity", "material", "color", "camera", "style"]
+notes = "Overall appearance and assembled relationship."
+
+[[references]]
+id = "BLADE_SIDE_MASTER"
+path = "references/KNIFE_001_BLADE_SIDE_MASTER.png"
+state = "approved"
+priority = 100
+roles = ["geometry", "silhouette", "part_layout"]
+notes = "Blade side outline, full tang and three pin positions."
+
+[[references]]
+id = "BLADE_TOP_MASTER"
+path = "references/KNIFE_001_BLADE_TOP_MASTER.png"
+state = "approved"
+priority = 100
+roles = ["geometry", "interface"]
+notes = "Thickness relationship and edge-on profile."
+
+[[references]]
+id = "HANDLE_L_OUTER_MASTER"
+path = "references/KNIFE_001_HANDLE_L_OUTER_MASTER.png"
+state = "approved"
+priority = 100
+roles = ["geometry", "silhouette", "material", "color", "part_layout"]
+notes = "Left handle outer shape, wood appearance and rivet layout."
+
+[[references]]
+id = "HANDLE_L_INNER_MASTER"
+path = "references/KNIFE_001_HANDLE_L_INNER_MASTER.png"
+state = "approved"
+priority = 100
+roles = ["geometry", "interface", "part_layout"]
+notes = "Left handle tang-contact surface and interfaces."
+
+[[references]]
+id = "HANDLE_R_OUTER_MASTER"
+path = "references/KNIFE_001_HANDLE_R_OUTER_MASTER.png"
+state = "approved"
+priority = 100
+roles = ["geometry", "silhouette", "material", "color", "part_layout"]
+notes = "Right handle outer shape and visual material."
+
+[[references]]
+id = "HANDLE_R_INNER_MASTER"
+path = "references/KNIFE_001_HANDLE_R_INNER_MASTER.png"
+state = "approved"
+priority = 100
+roles = ["geometry", "interface", "part_layout"]
+notes = "Right handle tang-contact surface and interfaces."

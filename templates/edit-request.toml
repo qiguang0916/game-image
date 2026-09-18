@@ -1,0 +1,27 @@
+document_type = "edit_request"
+schema_version = 1
+request_id = "EDIT_001"
+asset_id = "ASSET_001"
+operation = "local_edit"
+target = "named local region"
+change = "Describe only the requested delta."
+
+[preserve]
+hard = [
+  "overall silhouette",
+  "critical part positions",
+  "camera/projection"
+]
+soft = [
+  "lighting",
+  "background"
+]
+
+[[reference_bindings]]
+reference_id = "ASSEMBLED_MASTER"
+roles = ["identity", "geometry", "camera"]
+
+[output]
+purpose = "game_asset_reference"
+view = "same_as_master"
+background = "same_as_master"

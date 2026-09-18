@@ -1,0 +1,51 @@
+document_type = "qa_report"
+schema_version = 1
+report_id = "KNIFE_001_QA_RIVETS_001"
+asset_id = "KNIFE_001"
+request_id = "KNIFE_001_EDIT_RIVETS_001"
+status = "PASS"
+summary = "Example of an acceptable rivet-only material edit."
+
+[[gates]]
+name = "asset_identity"
+severity = "hard"
+status = "PASS"
+note = "KNIFE_001 remains the same asset."
+
+[[gates]]
+name = "requested_change"
+severity = "hard"
+status = "PASS"
+note = "All three existing rivets show the requested brushed cold-silver steel finish."
+
+[[gates]]
+name = "blade_silhouette"
+severity = "hard"
+status = "PASS"
+note = ""
+
+[[gates]]
+name = "handle_silhouette"
+severity = "hard"
+status = "PASS"
+note = ""
+
+[[gates]]
+name = "rivet_count_and_centers"
+severity = "hard"
+status = "PASS"
+note = "Three rivets remain in approved positions."
+
+[[gates]]
+name = "camera_projection"
+severity = "hard"
+status = "PASS"
+note = ""
+
+[[gates]]
+name = "wood_continuity"
+severity = "soft"
+status = "PASS"
+note = ""
+
+repair_directives = []
