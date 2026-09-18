@@ -21,6 +21,12 @@ ALLOWED_OPERATIONS = {
     "repair",
     "regenerate",
 }
+OPERATIONS_REQUIRING_BASE_EDIT_TARGET = {
+    "local_edit",
+    "structural_edit",
+    "variant",
+    "regenerate",
+}
 ALLOWED_QA_STATUSES = {
     "PASS",
     "PASS_WITH_NOTES",
@@ -139,6 +145,18 @@ def validate_edit_request(data: dict[str, Any], path: Path) -> None:
         raise ValidationError(f"{where}: invalid operation '{operation}'")
     require(data, "target", where)
     require(data, "change", where)
+
+    execution = data.get("execution", {})
+    if execution and not isinstance(execution, dict):
+        raise ValidationError(f"{where}: execution must be a table")
+    if operation in OPERATIONS_REQUIRING_BASE_EDIT_TARGET:
+        if not isinstance(execution, dict):
+            raise ValidationError(f"{where}: execution must be a table")
+        require(
+            execution,
+            "edit_target_reference_id",
+            f"{where}: execution",
+        )
 
     preserve = require(data, "preserve", where)
     if not isinstance(preserve, dict):
@@ -309,8 +327,11 @@ def cross_validate(documents: list[LoadedDocument]) -> None:
             reference_by_id = {
                 ref["id"]: ref for ref in asset["references"]
             }
+            bound_ids: set[str] = set()
+
             for binding in data.get("reference_bindings", []):
                 ref_id = binding["reference_id"]
+                bound_ids.add(ref_id)
                 ref = reference_by_id.get(ref_id)
                 if ref is None:
                     raise ValidationError(
@@ -330,6 +351,25 @@ def cross_validate(documents: list[LoadedDocument]) -> None:
                     raise ValidationError(
                         f"{doc.path}: reference_binding '{ref_id}' requests "
                         f"undeclared role(s): {joined}"
+                    )
+
+            operation = data["operation"]
+            if operation in OPERATIONS_REQUIRING_BASE_EDIT_TARGET:
+                target_id = data["execution"]["edit_target_reference_id"]
+                target_ref = reference_by_id.get(target_id)
+                if target_ref is None:
+                    raise ValidationError(
+                        f"{doc.path}: edit target '{target_id}' is not in asset "
+                        f"'{data['asset_id']}'"
+                    )
+                if target_ref.get("state") != "approved":
+                    raise ValidationError(
+                        f"{doc.path}: edit target '{target_id}' is not approved"
+                    )
+                if target_id not in bound_ids:
+                    raise ValidationError(
+                        f"{doc.path}: edit target '{target_id}' must also appear "
+                        "in reference_bindings"
                     )
 
         elif dtype == "qa_report":
