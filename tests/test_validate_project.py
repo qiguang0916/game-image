@@ -69,6 +69,15 @@ class ValidateProjectTests(unittest.TestCase):
         with self.assertRaises(validator.ValidationError):
             validator.validate_document(data, Path("asset.toml"))
 
+    def test_invalid_regeneration_budget_is_rejected(self) -> None:
+        data = self._asset()
+        data["qa"] = {
+            "max_repair_passes": 2,
+            "max_regeneration_passes": 4,
+        }
+        with self.assertRaises(validator.ValidationError):
+            validator.validate_document(data, Path("asset.toml"))
+
     def test_local_edit_requires_hard_preserve(self) -> None:
         data = {
             "document_type": "edit_request",
@@ -105,6 +114,47 @@ class ValidateProjectTests(unittest.TestCase):
         }
         with self.assertRaises(validator.ValidationError):
             validator.validate_document(data, Path("qa.toml"))
+
+    def test_repair_minor_requires_directive(self) -> None:
+        data = {
+            "document_type": "qa_report",
+            "schema_version": 1,
+            "report_id": "Q",
+            "asset_id": "A",
+            "request_id": "E",
+            "status": "REPAIR_MINOR",
+            "gates": [
+                {
+                    "name": "silhouette",
+                    "severity": "hard",
+                    "status": "FAIL",
+                }
+            ],
+            "repair_directives": [],
+        }
+        with self.assertRaises(validator.ValidationError):
+            validator.validate_document(data, Path("qa.toml"))
+
+    def test_repair_minor_with_directive_is_valid(self) -> None:
+        data = {
+            "document_type": "qa_report",
+            "schema_version": 1,
+            "report_id": "Q",
+            "asset_id": "A",
+            "request_id": "E",
+            "status": "REPAIR_MINOR",
+            "gates": [
+                {
+                    "name": "rivet_center",
+                    "severity": "hard",
+                    "status": "FAIL",
+                }
+            ],
+            "repair_directives": [
+                "Restore only the rivet center to the approved master position."
+            ],
+        }
+        validator.validate_document(data, Path("qa.toml"))
 
     def test_unknown_reference_binding_is_rejected_cross_document(self) -> None:
         asset = self._asset()
