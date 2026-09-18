@@ -68,7 +68,11 @@ def validate_asset_manifest(data: dict[str, Any], path: Path) -> None:
     if not isinstance(locks, dict):
         raise ValidationError(f"{where}: locks must be a table")
     ensure_string_list(locks.get("hard"), f"{where}: locks.hard")
-    ensure_string_list(locks.get("soft", []), f"{where}: locks.soft", allow_empty=True)
+    ensure_string_list(
+        locks.get("soft", []),
+        f"{where}: locks.soft",
+        allow_empty=True,
+    )
 
     references = require(data, "references", where)
     if not isinstance(references, list):
@@ -109,10 +113,20 @@ def validate_asset_manifest(data: dict[str, Any], path: Path) -> None:
     if qa:
         if not isinstance(qa, dict):
             raise ValidationError(f"{where}: qa must be a table")
-        passes = qa.get("max_repair_passes", 2)
-        if not isinstance(passes, int) or not 0 <= passes <= 5:
+
+        repair_passes = qa.get("max_repair_passes", 2)
+        if not isinstance(repair_passes, int) or not 0 <= repair_passes <= 5:
             raise ValidationError(
                 f"{where}: qa.max_repair_passes must be an integer 0..5"
+            )
+
+        regeneration_passes = qa.get("max_regeneration_passes", 1)
+        if (
+            not isinstance(regeneration_passes, int)
+            or not 0 <= regeneration_passes <= 3
+        ):
+            raise ValidationError(
+                f"{where}: qa.max_regeneration_passes must be an integer 0..3"
             )
 
 
@@ -153,6 +167,7 @@ def validate_edit_request(data: dict[str, Any], path: Path) -> None:
         raise ValidationError(
             f"{where}: reference_bindings must be an array of tables"
         )
+
     seen: set[str] = set()
     for index, binding in enumerate(bindings):
         bwhere = f"{where}: reference_bindings[{index}]"
@@ -184,7 +199,9 @@ def validate_qa_report(data: dict[str, Any], path: Path) -> None:
 
     hard_gate_count = 0
     failed_hard = False
+    non_pass_gate_count = 0
     seen_names: set[str] = set()
+
     for index, gate in enumerate(gates):
         gwhere = f"{where}: gates[{index}]"
         if not isinstance(gate, dict):
@@ -193,12 +210,17 @@ def validate_qa_report(data: dict[str, Any], path: Path) -> None:
         if name in seen_names:
             raise ValidationError(f"{gwhere}: duplicate gate name '{name}'")
         seen_names.add(name)
+
         severity = require(gate, "severity", gwhere)
         gate_status = require(gate, "status", gwhere)
         if severity not in ALLOWED_GATE_SEVERITIES:
             raise ValidationError(f"{gwhere}: invalid severity '{severity}'")
         if gate_status not in ALLOWED_GATE_STATUSES:
             raise ValidationError(f"{gwhere}: invalid status '{gate_status}'")
+
+        if gate_status not in {"PASS", "NOTE"}:
+            non_pass_gate_count += 1
+
         if severity == "hard":
             hard_gate_count += 1
             if gate_status != "PASS":
@@ -206,17 +228,26 @@ def validate_qa_report(data: dict[str, Any], path: Path) -> None:
 
     if hard_gate_count == 0:
         raise ValidationError(f"{where}: at least one hard gate is required")
+
     if status in {"PASS", "PASS_WITH_NOTES"} and failed_hard:
         raise ValidationError(
             f"{where}: PASS/PASS_WITH_NOTES cannot contain a non-PASS hard gate"
         )
 
-    directives = data.get("repair_directives", [])
-    ensure_string_list(
-        directives,
+    if status in {"REPAIR_MINOR", "REGENERATE_MAJOR"} and non_pass_gate_count == 0:
+        raise ValidationError(
+            f"{where}: {status} requires at least one failed/not-checked gate"
+        )
+
+    directives = ensure_string_list(
+        data.get("repair_directives", []),
         f"{where}: repair_directives",
         allow_empty=True,
     )
+    if status == "REPAIR_MINOR" and not directives:
+        raise ValidationError(
+            f"{where}: REPAIR_MINOR requires at least one repair directive"
+        )
 
 
 def validate_document(data: dict[str, Any], path: Path) -> None:
@@ -290,6 +321,7 @@ def cross_validate(documents: list[LoadedDocument]) -> None:
                     raise ValidationError(
                         f"{doc.path}: reference_binding '{ref_id}' is not approved"
                     )
+
                 declared_roles = set(ref.get("roles", []))
                 requested_roles = set(binding.get("roles", []))
                 undeclared = requested_roles - declared_roles

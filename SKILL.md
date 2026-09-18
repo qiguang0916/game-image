@@ -1,92 +1,88 @@
 ---
 name: game-image
-description: Reference-controlled game image director for game assets. Use for generating, editing, repairing, or validating game prop, character, environment, UI, or 3D-modeling reference images where master references, local edits, consistency, and visual QA matter. Backend-neutral; no local image model is required.
-version: 0.1.0
+description: Reference-controlled game image director and execution harness for game assets. Use for generating, editing, repairing, or validating game prop, character, environment, UI, or 3D-modeling reference images where master references, local edits, consistency, bounded iteration, and visual QA matter. Backend-neutral; no local image model is required.
+version: 0.2.0
 ---
 
 # Game Image Director
 
 ## Mission
 
-Turn image generation from a one-shot prompt into a controlled game-asset production loop.
+Turn image generation from a one-shot prompt into a controlled game-asset production loop:
 
-This skill does not make the underlying image model more capable. It improves orchestration:
+~~~text
+resolve asset
+  -> classify operation
+  -> bind approved references
+  -> compile locks + delta brief
+  -> delegate to host imagegen
+  -> inspect actual output
+  -> Visual QA
+  -> accept / bounded repair / bounded regeneration
+~~~
 
-- choose the correct approved references;
-- declare what each reference controls;
-- separate requested CHANGE from PRESERVE invariants;
-- prefer local edits over whole-image regeneration;
-- inspect the actual result;
-- reject outputs that violate hard gates;
-- issue a minimal correction delta when repair is possible.
+This skill does not replace the underlying image model. It owns production control around that model.
 
 ## Trigger
 
-Use this skill when the user asks to create or edit images for game production and at least one of these is true:
+Use this skill when game-image production needs one or more of:
 
-- an approved Master Reference exists;
-- multiple reference images have different jobs;
-- identity, silhouette, geometry, part position, camera, material, or style must remain stable;
-- the request is a local change;
-- the image will be used as a Blender / Unity / Unreal modeling reference;
-- the user wants repeatable visual QA instead of subjective “looks good” review.
+- an approved Master Reference;
+- multiple references with different responsibilities;
+- identity, silhouette, geometry, part position, camera, material, or style continuity;
+- a local edit that should not redesign the rest of the image;
+- Blender / Unity / Unreal modeling references;
+- repeatable Visual QA;
+- automatic routing from QA failure to repair/regeneration.
 
-For disposable mood images with no continuity requirements, a normal image generation flow is sufficient.
+For disposable mood images with no continuity requirements, normal image generation is sufficient.
 
-## Required subskills
+## Subskills
 
-Read these when relevant:
+Read as needed:
 
-- skills/asset-reference/SKILL.md for reference atlas and master selection.
-- skills/delta-edit/SKILL.md for local-edit routing and correction prompts.
-- skills/visual-qa/SKILL.md for acceptance gates and repair decisions.
+- `skills/asset-reference/SKILL.md` — Master Reference / Reference Atlas.
+- `skills/delta-edit/SKILL.md` — smallest-change routing.
+- `skills/visual-qa/SKILL.md` — hard/soft acceptance gates.
+- `skills/execution-loop/SKILL.md` — actual execution state machine.
 
-Also apply:
+Apply the detailed rules in `rules/`.
 
-- rules/reference-priority.md
-- rules/geometry-lock.md
-- rules/material-lock.md
-- rules/camera-lock.md
-- rules/acceptance-gates.md
-
-## Production contract
-
-### 1. Resolve the asset
+## 1. Resolve the asset
 
 Identify:
 
 - asset_id;
-- current approved primary master;
-- component masters;
-- rejected or superseded references;
-- current task target.
+- approved primary master;
+- role-specific component masters;
+- rejected/superseded references;
+- requested target.
 
-If an asset manifest exists, treat it as the source of truth.
+If an asset manifest exists, it is the source of truth.
 
-Never silently promote a draft or rejected image into a master.
+Never silently promote a draft, rejected image, or generated candidate into a master.
 
-### 2. Classify the operation
+## 2. Classify the operation
 
 Choose exactly one:
 
-- create: no usable master exists yet.
-- local_edit: the current composition and identity are correct; only a bounded region/property changes.
-- structural_edit: a component shape or arrangement must change while identity remains.
-- variant: create a deliberate alternate state while preserving selected identity anchors.
-- repair: a previous result failed one or more gates and can be corrected surgically.
-- regenerate: core composition, identity, silhouette, projection, or structure is wrong enough that local repair is unreliable.
+- `create`: no usable master exists.
+- `local_edit`: bounded region/property changes; identity/composition are already correct.
+- `structural_edit`: one component shape/arrangement changes while identity remains.
+- `variant`: deliberate alternate state with selected anchors preserved.
+- `repair`: a previous result failed localized QA gates.
+- `regenerate`: identity, silhouette, projection, topology, or widespread drift makes repair unreliable.
 
-Do not use regenerate merely because one small detail is wrong.
+Do not regenerate the whole asset for one small failure.
 
-### 3. Build the reference set
+## 3. Bind the minimum sufficient reference set
 
-For every selected reference, declare:
+Every selected reference must declare:
 
 - reference_id;
-- role or roles;
-- priority;
-- what it must influence;
-- what it must not influence.
+- approved state;
+- role(s);
+- what it controls.
 
 Common roles:
 
@@ -102,135 +98,141 @@ Common roles:
 - style
 - mood
 
-Use the smallest sufficient reference set. More references are not automatically better.
+Authority is role-specific. A material reference does not automatically control geometry.
 
-### 4. Compile locks
+## 4. Compile locks
 
 Split constraints into:
 
-HARD PRESERVE:
-- violations make the image unacceptable.
+### HARD PRESERVE
 
-SOFT PRESERVE:
-- should remain stable, but small visual drift may be tolerable if the requested edit succeeds.
+Violation rejects the result.
 
-Typical hard locks for 3D modeling references:
+Typical 3D reference locks:
 
 - silhouette;
 - part count;
-- hole / pin centers;
-- interfaces between parts;
-- orthographic or specified camera;
+- critical hole/pin centers;
+- interfaces;
+- required camera/projection;
 - major proportions;
 - left/right identity;
-- approved component layout.
+- approved part layout.
 
-### 5. Compile a delta brief
+### SOFT PRESERVE
 
-For edits, the prompt must emphasize the delta, not re-describe the whole asset.
+Continuity preferences where minor non-destructive drift may be acceptable.
 
-Use this structure:
+## 5. Compile the brief
 
-~~~text
-ASSET:
-<asset id>
+Use:
 
-OPERATION:
-<local_edit / structural_edit / repair / ...>
-
-TARGET:
-<exact region or property>
-
-CHANGE:
-<only what changes>
-
-REFERENCE ROLES:
-REF_1 = <job>
-REF_2 = <job>
-
-HARD PRESERVE:
-<unchanged gates>
-
-SOFT PRESERVE:
-<unchanged preferences>
-
-OUTPUT:
-<view / crop / background / purpose>
+~~~bash
+python3 scripts/compile_brief.py <asset.toml> <edit.toml>
 ~~~
 
-Do not introduce new design ideas that were not requested.
+For edits, describe the delta rather than re-describing the whole asset.
 
-### 6. Execute with the available image backend
+Do not introduce new design ideas outside the request.
 
-This repository is backend-neutral.
+## 6. Delegate image execution
 
-If the environment provides a native image generation/editing tool, use it. For an edit request, prefer the backend's image-edit path over a fresh text-to-image generation when possible.
+Read `references/openai-imagegen-delegation.md`.
 
-Pass only the relevant approved references and explicitly bind their roles in the instruction.
+When the host provides OpenAI/Codex `$imagegen`:
 
-If the backend cannot accept all required references, reduce to the highest-priority reference set and disclose the reduced control; do not pretend equivalent fidelity.
+- delegate actual image generation/editing to it;
+- use its built-in-first path;
+- do not require an API key for normal built-in execution;
+- do not implement a duplicate OpenAI API client in game-image;
+- do not automatically switch to CLI/API fallback.
 
-### 7. Inspect the actual output
+For edit operations, prefer image editing against the correct source/master instead of fresh text-to-image.
 
-Do not accept an image from the prompt alone.
+## 7. Persist execution state
 
-Look at the produced pixels and compare against:
+Use `skills/execution-loop/SKILL.md` and:
 
-- the requested delta;
-- hard locks;
+~~~bash
+python3 scripts/execution_loop.py init ...
+python3 scripts/execution_loop.py mark-generated ...
+python3 scripts/execution_loop.py apply-qa ...
+~~~
+
+A generated image is not complete until it enters QA.
+
+## 8. Inspect actual pixels
+
+Compare the produced image with:
+
+- requested delta;
+- hard/soft locks;
 - selected masters;
-- expected view and framing.
+- expected view/framing.
 
-If the runtime cannot inspect the result, mark QA BLOCKED rather than claiming success.
+Never infer QA success from the prompt.
 
-### 8. Run Visual QA
+If the host cannot inspect the generated result, QA is BLOCKED.
 
-Use skills/visual-qa/SKILL.md.
+## 9. Visual QA
 
-A hard-gate failure means REJECT even if the image is attractive.
+Use `skills/visual-qa/SKILL.md`.
 
-### 9. Decide repair vs regenerate
+Hard-gate failure overrides aesthetics.
 
-Repair when:
+Statuses:
 
-- identity and composition remain correct;
-- failures are localized;
-- the requested edit is mostly achieved.
+- PASS
+- PASS_WITH_NOTES
+- REPAIR_MINOR
+- REGENERATE_MAJOR
+- BLOCKED
 
-Regenerate when:
+## 10. Bounded correction
 
-- wrong asset identity;
-- wrong broad silhouette;
-- wrong view/projection;
-- wrong part topology/count;
-- multiple unrelated regions drifted;
-- local corrections repeatedly damage new areas.
+For `REPAIR_MINOR`:
 
-Default maximum repair passes: 2.
+~~~bash
+python3 scripts/compile_repair.py <asset.toml> <edit.toml> <qa.toml>
+~~~
 
-If the same hard gate fails twice, stop looping and report the limitation instead of endlessly regenerating.
+Use the failed generated image as the edit target and correct only failed gates.
 
-## Output to the user
+For `REGENERATE_MAJOR`:
 
-When the task includes actual image generation/editing, deliver the image plus a concise status:
+- discard the bad result as an edit source;
+- restart from the approved master/original target;
+- re-use the validated original brief.
 
-- operation used;
-- master/reference roles used;
-- QA result;
-- any known limitation.
+Default budgets:
 
-Do not dump internal orchestration unless requested.
+- 2 repair passes;
+- 1 regeneration pass.
+
+Never loop indefinitely.
+
+## Output
+
+For project-bound image work, report concisely:
+
+- final state;
+- final asset path;
+- operation;
+- QA outcome;
+- any material limitation.
+
+Do not dump internal state history unless requested.
 
 ## Structured artifacts
 
-Use templates when persistent project state is needed:
+- `templates/asset-manifest.toml`
+- `templates/edit-request.toml`
+- `templates/qa-report.toml`
+- `templates/execution-run.json`
 
-- templates/asset-manifest.toml
-- templates/edit-request.toml
-- templates/qa-report.toml
-
-Validate manifests with:
+Validate:
 
 ~~~bash
 python3 scripts/validate_project.py
+python3 -m unittest discover -s tests -v
 ~~~
