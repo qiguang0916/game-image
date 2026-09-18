@@ -50,7 +50,9 @@ def require(data: dict[str, Any], key: str, where: str) -> Any:
 
 
 def ensure_string_list(value: Any, where: str, allow_empty: bool = False) -> list[str]:
-    if not isinstance(value, list) or any(not isinstance(x, str) or not x.strip() for x in value):
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item.strip() for item in value
+    ):
         raise ValidationError(f"{where}: expected a list of non-empty strings")
     if not allow_empty and not value:
         raise ValidationError(f"{where}: list must not be empty")
@@ -73,6 +75,7 @@ def validate_asset_manifest(data: dict[str, Any], path: Path) -> None:
         raise ValidationError(f"{where}: references must be an array of tables")
 
     ids: set[str] = set()
+    reference_by_id: dict[str, dict[str, Any]] = {}
     approved = 0
     for index, ref in enumerate(references):
         rwhere = f"{where}: references[{index}]"
@@ -82,6 +85,7 @@ def validate_asset_manifest(data: dict[str, Any], path: Path) -> None:
         if ref_id in ids:
             raise ValidationError(f"{rwhere}: duplicate reference id '{ref_id}'")
         ids.add(ref_id)
+        reference_by_id[ref_id] = ref
         require(ref, "path", rwhere)
         state = require(ref, "state", rwhere)
         if state not in ALLOWED_REFERENCE_STATES:
@@ -98,6 +102,8 @@ def validate_asset_manifest(data: dict[str, Any], path: Path) -> None:
         raise ValidationError(
             f"{where}: primary_master '{primary_master}' does not match a reference id"
         )
+    if reference_by_id[primary_master].get("state") != "approved":
+        raise ValidationError(f"{where}: primary_master must be approved")
 
     qa = data.get("qa", {})
     if qa:
@@ -105,7 +111,9 @@ def validate_asset_manifest(data: dict[str, Any], path: Path) -> None:
             raise ValidationError(f"{where}: qa must be a table")
         passes = qa.get("max_repair_passes", 2)
         if not isinstance(passes, int) or not 0 <= passes <= 5:
-            raise ValidationError(f"{where}: qa.max_repair_passes must be an integer 0..5")
+            raise ValidationError(
+                f"{where}: qa.max_repair_passes must be an integer 0..5"
+            )
 
 
 def validate_edit_request(data: dict[str, Any], path: Path) -> None:
@@ -132,13 +140,19 @@ def validate_edit_request(data: dict[str, Any], path: Path) -> None:
         allow_empty=True,
     )
     if operation == "local_edit" and not hard:
-        raise ValidationError(f"{where}: local_edit requires at least one hard preserve rule")
+        raise ValidationError(
+            f"{where}: local_edit requires at least one hard preserve rule"
+        )
 
     bindings = data.get("reference_bindings", [])
     if operation != "create" and not bindings:
-        raise ValidationError(f"{where}: non-create operations require reference_bindings")
+        raise ValidationError(
+            f"{where}: non-create operations require reference_bindings"
+        )
     if not isinstance(bindings, list):
-        raise ValidationError(f"{where}: reference_bindings must be an array of tables")
+        raise ValidationError(
+            f"{where}: reference_bindings must be an array of tables"
+        )
     seen: set[str] = set()
     for index, binding in enumerate(bindings):
         bwhere = f"{where}: reference_bindings[{index}]"
@@ -146,9 +160,13 @@ def validate_edit_request(data: dict[str, Any], path: Path) -> None:
             raise ValidationError(f"{bwhere}: expected table")
         ref_id = require(binding, "reference_id", bwhere)
         if ref_id in seen:
-            raise ValidationError(f"{bwhere}: duplicate reference binding '{ref_id}'")
+            raise ValidationError(
+                f"{bwhere}: duplicate reference binding '{ref_id}'"
+            )
         seen.add(ref_id)
-        ensure_string_list(binding.get("roles"), f"{bwhere}: roles")
+        roles = ensure_string_list(binding.get("roles"), f"{bwhere}: roles")
+        if len(set(roles)) != len(roles):
+            raise ValidationError(f"{bwhere}: duplicate binding roles")
 
 
 def validate_qa_report(data: dict[str, Any], path: Path) -> None:
@@ -166,11 +184,15 @@ def validate_qa_report(data: dict[str, Any], path: Path) -> None:
 
     hard_gate_count = 0
     failed_hard = False
+    seen_names: set[str] = set()
     for index, gate in enumerate(gates):
         gwhere = f"{where}: gates[{index}]"
         if not isinstance(gate, dict):
             raise ValidationError(f"{gwhere}: expected table")
-        require(gate, "name", gwhere)
+        name = require(gate, "name", gwhere)
+        if name in seen_names:
+            raise ValidationError(f"{gwhere}: duplicate gate name '{name}'")
+        seen_names.add(name)
         severity = require(gate, "severity", gwhere)
         gate_status = require(gate, "status", gwhere)
         if severity not in ALLOWED_GATE_SEVERITIES:
@@ -201,7 +223,9 @@ def validate_document(data: dict[str, Any], path: Path) -> None:
     where = str(path)
     document_type = require(data, "document_type", where)
     if document_type not in ALLOWED_DOCUMENT_TYPES:
-        raise ValidationError(f"{where}: unknown document_type '{document_type}'")
+        raise ValidationError(
+            f"{where}: unknown document_type '{document_type}'"
+        )
     if data.get("schema_version") != 1:
         raise ValidationError(f"{where}: schema_version must be 1")
 
@@ -230,12 +254,16 @@ def cross_validate(documents: list[LoadedDocument]) -> None:
         if dtype == "asset_manifest":
             asset_id = doc.data["asset_id"]
             if asset_id in assets:
-                raise ValidationError(f"duplicate asset manifest for '{asset_id}'")
+                raise ValidationError(
+                    f"duplicate asset manifest for '{asset_id}'"
+                )
             assets[asset_id] = doc.data
         elif dtype == "edit_request":
             request_id = doc.data["request_id"]
             if request_id in edits:
-                raise ValidationError(f"duplicate edit request '{request_id}'")
+                raise ValidationError(
+                    f"duplicate edit request '{request_id}'"
+                )
             edits[request_id] = doc.data
 
     for doc in documents:
@@ -246,12 +274,30 @@ def cross_validate(documents: list[LoadedDocument]) -> None:
             asset = assets.get(data["asset_id"])
             if asset is None:
                 continue
-            valid_refs = {ref["id"] for ref in asset["references"]}
+
+            reference_by_id = {
+                ref["id"]: ref for ref in asset["references"]
+            }
             for binding in data.get("reference_bindings", []):
                 ref_id = binding["reference_id"]
-                if ref_id not in valid_refs:
+                ref = reference_by_id.get(ref_id)
+                if ref is None:
                     raise ValidationError(
-                        f"{doc.path}: reference_binding '{ref_id}' is not in asset '{data['asset_id']}'"
+                        f"{doc.path}: reference_binding '{ref_id}' is not in asset "
+                        f"'{data['asset_id']}'"
+                    )
+                if ref.get("state") != "approved":
+                    raise ValidationError(
+                        f"{doc.path}: reference_binding '{ref_id}' is not approved"
+                    )
+                declared_roles = set(ref.get("roles", []))
+                requested_roles = set(binding.get("roles", []))
+                undeclared = requested_roles - declared_roles
+                if undeclared:
+                    joined = ", ".join(sorted(undeclared))
+                    raise ValidationError(
+                        f"{doc.path}: reference_binding '{ref_id}' requests "
+                        f"undeclared role(s): {joined}"
                     )
 
         elif dtype == "qa_report":
@@ -271,7 +317,9 @@ def iter_toml_paths(inputs: Iterable[str]) -> list[Path]:
         elif path.suffix == ".toml":
             paths.append(path)
         else:
-            raise ValidationError(f"{path}: expected a TOML file or directory")
+            raise ValidationError(
+                f"{path}: expected a TOML file or directory"
+            )
     return sorted(dict.fromkeys(paths))
 
 
