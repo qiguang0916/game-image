@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import importlib.util
-import tempfile
+import sys
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "scripts" / "validate_project.py"
-SPEC = importlib.util.spec_from_file_location("validate_project", MODULE_PATH)
-assert SPEC and SPEC.loader
-validator = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(validator)
+SCRIPTS = ROOT / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+import validate_project as validator  # noqa: E402
 
 
 class ValidateProjectTests(unittest.TestCase):
@@ -37,6 +36,31 @@ class ValidateProjectTests(unittest.TestCase):
                 {
                     "id": "M",
                     "path": "b.png",
+                    "state": "approved",
+                    "roles": ["geometry"],
+                },
+            ],
+        }
+        with self.assertRaises(validator.ValidationError):
+            validator.validate_document(data, Path("asset.toml"))
+
+    def test_primary_master_must_be_approved(self) -> None:
+        data = {
+            "document_type": "asset_manifest",
+            "schema_version": 1,
+            "asset_id": "A",
+            "primary_master": "M",
+            "locks": {"hard": ["silhouette"], "soft": []},
+            "references": [
+                {
+                    "id": "M",
+                    "path": "a.png",
+                    "state": "draft",
+                    "roles": ["identity"],
+                },
+                {
+                    "id": "G",
+                    "path": "g.png",
                     "state": "approved",
                     "roles": ["geometry"],
                 },
@@ -83,7 +107,32 @@ class ValidateProjectTests(unittest.TestCase):
             validator.validate_document(data, Path("qa.toml"))
 
     def test_unknown_reference_binding_is_rejected_cross_document(self) -> None:
-        asset = {
+        asset = self._asset()
+        edit = self._edit(reference_id="UNKNOWN", roles=["identity"])
+        docs = [
+            validator.LoadedDocument(Path("asset.toml"), asset),
+            validator.LoadedDocument(Path("edit.toml"), edit),
+        ]
+        for doc in docs:
+            validator.validate_document(doc.data, doc.path)
+        with self.assertRaises(validator.ValidationError):
+            validator.cross_validate(docs)
+
+    def test_undeclared_reference_role_is_rejected(self) -> None:
+        asset = self._asset()
+        edit = self._edit(reference_id="M", roles=["material"])
+        docs = [
+            validator.LoadedDocument(Path("asset.toml"), asset),
+            validator.LoadedDocument(Path("edit.toml"), edit),
+        ]
+        for doc in docs:
+            validator.validate_document(doc.data, doc.path)
+        with self.assertRaises(validator.ValidationError):
+            validator.cross_validate(docs)
+
+    @staticmethod
+    def _asset() -> dict:
+        return {
             "document_type": "asset_manifest",
             "schema_version": 1,
             "asset_id": "A",
@@ -98,7 +147,10 @@ class ValidateProjectTests(unittest.TestCase):
                 }
             ],
         }
-        edit = {
+
+    @staticmethod
+    def _edit(reference_id: str, roles: list[str]) -> dict:
+        return {
             "document_type": "edit_request",
             "schema_version": 1,
             "request_id": "E",
@@ -108,17 +160,9 @@ class ValidateProjectTests(unittest.TestCase):
             "change": "finish",
             "preserve": {"hard": ["silhouette"], "soft": []},
             "reference_bindings": [
-                {"reference_id": "UNKNOWN", "roles": ["material"]}
+                {"reference_id": reference_id, "roles": roles}
             ],
         }
-        docs = [
-            validator.LoadedDocument(Path("asset.toml"), asset),
-            validator.LoadedDocument(Path("edit.toml"), edit),
-        ]
-        for doc in docs:
-            validator.validate_document(doc.data, doc.path)
-        with self.assertRaises(validator.ValidationError):
-            validator.cross_validate(docs)
 
 
 if __name__ == "__main__":
