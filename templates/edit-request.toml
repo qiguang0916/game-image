@@ -6,6 +6,9 @@ operation = "local_edit"
 target = "named local region"
 change = "Describe only the requested delta."
 
+[execution]
+edit_target_reference_id = "ASSEMBLED_MASTER"
+
 [preserve]
 hard = [
   "overall silhouette",
