@@ -42,6 +42,7 @@ Request
 - templates/ — TOML 结构化任务模板
 - examples/KNIFE_001/ — 3D Hero Prop 工作示例
 - scripts/validate_project.py — 零依赖结构验证器
+- scripts/compile_brief.py — 把 Asset + Edit TOML 编译成可直接交给生图后端的结构化 Brief
 
 ## 设计原则
 
@@ -86,6 +87,22 @@ SOFT PRESERVE:
 ~~~
 
 生成后必须经过 Visual QA；如果硬门禁失败，不应直接交付。
+
+## 可执行 Brief Compiler
+
+不调用任何图片模型，只把结构化任务编译成后端无关的最终指令：
+
+~~~bash
+python3 scripts/compile_brief.py   examples/KNIFE_001/asset.toml   examples/KNIFE_001/edits/rivets-brushed-silver.toml
+~~~
+
+它会自动合并：
+
+- Asset 级 Hard / Soft Locks
+- 当前 Edit 的 Preserve 规则
+- 经过验证的 Reference Role
+- Output 目标
+- Local Edit 的 no-redesign 边界
 
 ## 本地验证
 

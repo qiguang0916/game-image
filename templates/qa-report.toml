@@ -5,6 +5,7 @@ asset_id = "ASSET_001"
 request_id = "EDIT_001"
 status = "PASS_WITH_NOTES"
 summary = "Example QA report."
+repair_directives = []
 
 [[gates]]
 name = "asset_identity"
@@ -23,5 +24,3 @@ name = "lighting_continuity"
 severity = "soft"
 status = "NOTE"
 note = "Minor non-blocking highlight drift."
-
-repair_directives = []

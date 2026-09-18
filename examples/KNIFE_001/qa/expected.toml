@@ -5,6 +5,7 @@ asset_id = "KNIFE_001"
 request_id = "KNIFE_001_EDIT_RIVETS_001"
 status = "PASS"
 summary = "Example of an acceptable rivet-only material edit."
+repair_directives = []
 
 [[gates]]
 name = "asset_identity"
@@ -47,5 +48,3 @@ name = "wood_continuity"
 severity = "soft"
 status = "PASS"
 note = ""
-
-repair_directives = []
