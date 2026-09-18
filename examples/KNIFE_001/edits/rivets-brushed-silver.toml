@@ -6,6 +6,9 @@ operation = "local_edit"
 target = "the three existing handle rivets only"
 change = "Change only the rivet surface finish to subtle brushed cold-silver steel; non-mirror, restrained linear brushing."
 
+[execution]
+edit_target_reference_id = "ASSEMBLED_MASTER"
+
 [preserve]
 hard = [
   "exact blade broad silhouette",

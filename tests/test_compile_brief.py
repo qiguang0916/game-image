@@ -27,6 +27,8 @@ class CompileBriefTests(unittest.TestCase):
 
         self.assertIn("ASSET: KNIFE_001", brief)
         self.assertIn("OPERATION: local_edit", brief)
+        self.assertIn("EDIT TARGET:", brief)
+        self.assertIn("ASSEMBLED_MASTER", brief)
         self.assertIn("REF_1: ASSEMBLED_MASTER", brief)
         self.assertIn("REF_2: HANDLE_L_OUTER_MASTER", brief)
         self.assertIn("three existing handle rivets only", brief)
@@ -59,6 +61,9 @@ class CompileBriefTests(unittest.TestCase):
             "operation": "local_edit",
             "target": "part",
             "change": "new finish",
+            "execution": {
+                "edit_target_reference_id": "M",
+            },
             "preserve": {
                 "hard": ["part center"],
                 "soft": ["background"],
@@ -69,6 +74,8 @@ class CompileBriefTests(unittest.TestCase):
         }
         brief = compile_brief.compile_brief(asset, edit)
 
+        self.assertIn("EDIT TARGET:", brief)
+        self.assertIn("M | path=master.png", brief)
         self.assertIn("- asset silhouette", brief)
         self.assertIn("- part center", brief)
         self.assertIn("- lighting", brief)

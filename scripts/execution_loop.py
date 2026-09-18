@@ -140,6 +140,10 @@ def validate_run_state(run: dict[str, Any]) -> None:
     if not isinstance(run["history"], list):
         raise ValidationError("history must be a list")
 
+    last_qa = run.get("last_qa")
+    if last_qa is not None and not isinstance(last_qa, dict):
+        raise ValidationError("last_qa must be an object or null")
+
 
 def mark_generated(run: dict[str, Any], result_path: str) -> dict[str, Any]:
     validate_run_state(run)
@@ -187,9 +191,15 @@ def apply_qa(
     updated = deepcopy(run)
     qa_status = qa["status"]
     updated["last_qa"] = {
+        "document_type": "qa_report",
+        "schema_version": qa["schema_version"],
         "report_id": qa["report_id"],
+        "asset_id": qa["asset_id"],
+        "request_id": qa["request_id"],
         "status": qa_status,
         "summary": qa.get("summary", ""),
+        "gates": deepcopy(qa.get("gates", [])),
+        "repair_directives": deepcopy(qa.get("repair_directives", [])),
     }
 
     if qa_status in {"PASS", "PASS_WITH_NOTES"}:

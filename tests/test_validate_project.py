@@ -78,20 +78,15 @@ class ValidateProjectTests(unittest.TestCase):
         with self.assertRaises(validator.ValidationError):
             validator.validate_document(data, Path("asset.toml"))
 
+    def test_local_edit_requires_explicit_edit_target(self) -> None:
+        data = self._edit(reference_id="M", roles=["identity"])
+        del data["execution"]
+        with self.assertRaises(validator.ValidationError):
+            validator.validate_document(data, Path("edit.toml"))
+
     def test_local_edit_requires_hard_preserve(self) -> None:
-        data = {
-            "document_type": "edit_request",
-            "schema_version": 1,
-            "request_id": "E",
-            "asset_id": "A",
-            "operation": "local_edit",
-            "target": "rivet",
-            "change": "silver",
-            "preserve": {"hard": [], "soft": []},
-            "reference_bindings": [
-                {"reference_id": "M", "roles": ["identity"]}
-            ],
-        }
+        data = self._edit(reference_id="M", roles=["identity"])
+        data["preserve"]["hard"] = []
         with self.assertRaises(validator.ValidationError):
             validator.validate_document(data, Path("edit.toml"))
 
@@ -159,6 +154,7 @@ class ValidateProjectTests(unittest.TestCase):
     def test_unknown_reference_binding_is_rejected_cross_document(self) -> None:
         asset = self._asset()
         edit = self._edit(reference_id="UNKNOWN", roles=["identity"])
+        edit["execution"]["edit_target_reference_id"] = "M"
         docs = [
             validator.LoadedDocument(Path("asset.toml"), asset),
             validator.LoadedDocument(Path("edit.toml"), edit),
@@ -177,6 +173,29 @@ class ValidateProjectTests(unittest.TestCase):
         ]
         for doc in docs:
             validator.validate_document(doc.data, doc.path)
+        with self.assertRaises(validator.ValidationError):
+            validator.cross_validate(docs)
+
+    def test_edit_target_must_be_bound_reference(self) -> None:
+        asset = self._asset()
+        asset["references"].append(
+            {
+                "id": "G",
+                "path": "g.png",
+                "state": "approved",
+                "roles": ["geometry"],
+            }
+        )
+        edit = self._edit(reference_id="M", roles=["identity"])
+        edit["execution"]["edit_target_reference_id"] = "G"
+
+        docs = [
+            validator.LoadedDocument(Path("asset.toml"), asset),
+            validator.LoadedDocument(Path("edit.toml"), edit),
+        ]
+        for doc in docs:
+            validator.validate_document(doc.data, doc.path)
+
         with self.assertRaises(validator.ValidationError):
             validator.cross_validate(docs)
 
@@ -208,6 +227,7 @@ class ValidateProjectTests(unittest.TestCase):
             "operation": "local_edit",
             "target": "part",
             "change": "finish",
+            "execution": {"edit_target_reference_id": reference_id},
             "preserve": {"hard": ["silhouette"], "soft": []},
             "reference_bindings": [
                 {"reference_id": reference_id, "roles": roles}
