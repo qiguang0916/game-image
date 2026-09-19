@@ -130,11 +130,22 @@ def run_preflight(
     asset_path = Path(asset_path)
     edit_path = Path(edit_path)
 
-    asset_doc = load_document(asset_path)
-    edit_doc = load_document(edit_path)
-    validate_document(asset_doc.data, asset_doc.path)
-    validate_document(edit_doc.data, edit_doc.path)
-    cross_validate([asset_doc, edit_doc])
+    try:
+        asset_doc = load_document(asset_path)
+        edit_doc = load_document(edit_path)
+        validate_document(asset_doc.data, asset_doc.path)
+        validate_document(edit_doc.data, edit_doc.path)
+        cross_validate([asset_doc, edit_doc])
+    except ValidationError as exc:
+        return {
+            "status": "BLOCKED",
+            "mode": "dry_run" if dry_run else "runtime",
+            "can_execute": False,
+            "reason_codes": ["reference_contract_invalid"],
+            "checks": [],
+            "error": str(exc),
+            "reference_sufficiency": None,
+        }
 
     if dry_run:
         return {
