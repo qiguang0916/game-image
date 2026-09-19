@@ -130,6 +130,8 @@ class V04RoutingTests(unittest.TestCase):
             "visual_inspection_unavailable",
             run["blocker"]["reason_code"],
         )
+        self.assertEqual("QA_1", run["last_qa"]["report_id"])
+        self.assertEqual("BLOCKED", run["last_qa"]["status"])
 
     def test_ready_packet_contains_v04_contracts(self) -> None:
         run = execution_loop.init_run(self._asset(), self._edit())
