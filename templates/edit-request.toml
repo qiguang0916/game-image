@@ -9,16 +9,24 @@ change = "Describe only the requested delta."
 [execution]
 edit_target_reference_id = "ASSEMBLED_MASTER"
 
+[reference_sufficiency]
+required_roles = ["identity", "geometry"]
+authoritative_facts = ["visible assembled layout"]
+provisional_fields = []
+prohibited_assumptions = ["unseen structure is approved"]
+on_missing = "blocked"
+
+[qa_contract]
+enforce_complete_hard_gates = true
+enforce_lock_gates = true
+
 [preserve]
 hard = [
   "overall silhouette",
   "critical part positions",
   "camera/projection"
 ]
-soft = [
-  "lighting",
-  "background"
-]
+soft = ["lighting", "background"]
 
 [[reference_bindings]]
 reference_id = "ASSEMBLED_MASTER"

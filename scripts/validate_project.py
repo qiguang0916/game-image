@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -35,7 +36,12 @@ ALLOWED_QA_STATUSES = {
     "BLOCKED",
 }
 ALLOWED_GATE_SEVERITIES = {"hard", "soft"}
-ALLOWED_GATE_STATUSES = {"PASS", "FAIL", "NOTE", "NOT_CHECKED"}
+ALLOWED_GATE_STATUSES = {"PASS", "FAIL", "NOTE", "NOT_CHECKED", "NOT_VERIFIABLE"}
+ALLOWED_TOPOLOGY_RELATIONSHIPS = {
+    "integral", "continuous", "separate", "mounted_on",
+    "enclosed_by", "aligned_with", "shared_centers", "interface",
+}
+ALLOWED_EVIDENCE = {"authoritative", "provisional", "unknown"}
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,104 @@ def ensure_string_list(value: Any, where: str, allow_empty: bool = False) -> lis
     return value
 
 
+
+def _gate_key(gate: dict[str, Any], where: str = "gate") -> str:
+    key = gate.get("id") or gate.get("name")
+    if not isinstance(key, str) or not key.strip():
+        raise ValidationError(f"{where}: missing required field 'id' or 'name'")
+    return key
+
+
+def _slug(value: str) -> str:
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    return value.strip("_") or "gate"
+
+
+def validate_topology(topology: Any, where: str) -> None:
+    if topology is None:
+        return
+    if not isinstance(topology, dict):
+        raise ValidationError(f"{where}: topology must be a table")
+    components = topology.get("components", [])
+    relationships = topology.get("relationships", [])
+    if not isinstance(components, list):
+        raise ValidationError(f"{where}: topology.components must be an array of tables")
+    if not isinstance(relationships, list):
+        raise ValidationError(f"{where}: topology.relationships must be an array of tables")
+
+    seen_components: set[str] = set()
+    for index, component in enumerate(components):
+        cwhere = f"{where}: topology.components[{index}]"
+        if not isinstance(component, dict):
+            raise ValidationError(f"{cwhere}: expected table")
+        component_id = require(component, "id", cwhere)
+        if component_id in seen_components:
+            raise ValidationError(f"{cwhere}: duplicate component id '{component_id}'")
+        seen_components.add(component_id)
+        if not isinstance(component.get("required", True), bool):
+            raise ValidationError(f"{cwhere}: required must be boolean")
+        count = component.get("count")
+        if count is not None and (not isinstance(count, int) or count < 1):
+            raise ValidationError(f"{cwhere}: count must be an integer >= 1")
+        evidence = component.get("evidence", "authoritative")
+        if evidence not in ALLOWED_EVIDENCE:
+            raise ValidationError(f"{cwhere}: invalid evidence '{evidence}'")
+
+    seen_relationships: set[str] = set()
+    for index, relationship in enumerate(relationships):
+        rwhere = f"{where}: topology.relationships[{index}]"
+        if not isinstance(relationship, dict):
+            raise ValidationError(f"{rwhere}: expected table")
+        relationship_id = require(relationship, "id", rwhere)
+        if relationship_id in seen_relationships:
+            raise ValidationError(f"{rwhere}: duplicate relationship id '{relationship_id}'")
+        seen_relationships.add(relationship_id)
+        kind = require(relationship, "type", rwhere)
+        if kind not in ALLOWED_TOPOLOGY_RELATIONSHIPS:
+            raise ValidationError(f"{rwhere}: unsupported relationship type '{kind}'")
+        members = ensure_string_list(relationship.get("members"), f"{rwhere}: members")
+        if len(members) < 2:
+            raise ValidationError(f"{rwhere}: relationships require at least two members")
+        undeclared_members = [
+            member for member in members if member not in seen_components
+        ]
+        if undeclared_members:
+            raise ValidationError(
+                f"{rwhere}: relationship member(s) must be declared components: "
+                + ", ".join(undeclared_members)
+            )
+        if not isinstance(relationship.get("required", True), bool):
+            raise ValidationError(f"{rwhere}: required must be boolean")
+        evidence = relationship.get("evidence", "authoritative")
+        if evidence not in ALLOWED_EVIDENCE:
+            raise ValidationError(f"{rwhere}: invalid evidence '{evidence}'")
+    if not isinstance(topology.get("prohibited_extra_components", False), bool):
+        raise ValidationError(f"{where}: topology.prohibited_extra_components must be boolean")
+
+
+def validate_reference_sufficiency(contract: Any, where: str) -> None:
+    if contract is None:
+        return
+    if not isinstance(contract, dict):
+        raise ValidationError(f"{where}: reference_sufficiency must be a table")
+    ensure_string_list(
+        contract.get("required_roles", []),
+        f"{where}: reference_sufficiency.required_roles",
+        allow_empty=True,
+    )
+    for key in ("authoritative_facts", "provisional_fields", "prohibited_assumptions"):
+        ensure_string_list(
+            contract.get(key, []),
+            f"{where}: reference_sufficiency.{key}",
+            allow_empty=True,
+        )
+    if contract.get("on_missing", "blocked") not in {"blocked", "provisional"}:
+        raise ValidationError(
+            f"{where}: reference_sufficiency.on_missing must be blocked or provisional"
+        )
+
+
 def validate_asset_manifest(data: dict[str, Any], path: Path) -> None:
     where = str(path)
     require(data, "asset_id", where)
@@ -79,6 +183,7 @@ def validate_asset_manifest(data: dict[str, Any], path: Path) -> None:
         f"{where}: locks.soft",
         allow_empty=True,
     )
+    validate_topology(data.get("topology"), where)
 
     references = require(data, "references", where)
     if not isinstance(references, list):
@@ -158,6 +263,8 @@ def validate_edit_request(data: dict[str, Any], path: Path) -> None:
             f"{where}: execution",
         )
 
+    validate_reference_sufficiency(data.get("reference_sufficiency"), where)
+
     preserve = require(data, "preserve", where)
     if not isinstance(preserve, dict):
         raise ValidationError(f"{where}: preserve must be a table")
@@ -224,7 +331,7 @@ def validate_qa_report(data: dict[str, Any], path: Path) -> None:
         gwhere = f"{where}: gates[{index}]"
         if not isinstance(gate, dict):
             raise ValidationError(f"{gwhere}: expected table")
-        name = require(gate, "name", gwhere)
+        name = _gate_key(gate, gwhere)
         if name in seen_names:
             raise ValidationError(f"{gwhere}: duplicate gate name '{name}'")
         seen_names.add(name)
@@ -266,6 +373,241 @@ def validate_qa_report(data: dict[str, Any], path: Path) -> None:
         raise ValidationError(
             f"{where}: REPAIR_MINOR requires at least one repair directive"
         )
+
+
+
+def compile_reference_sufficiency(
+    asset: dict[str, Any],
+    edit: dict[str, Any],
+) -> dict[str, Any]:
+    contract = edit.get("reference_sufficiency", {}) or {}
+    required_roles = list(contract.get("required_roles", []))
+    covered_roles: set[str] = set()
+    for binding in edit.get("reference_bindings", []):
+        covered_roles.update(binding.get("roles", []))
+    missing_roles = [role for role in required_roles if role not in covered_roles]
+    on_missing = contract.get("on_missing", "blocked")
+    status = (
+        "sufficient"
+        if not missing_roles
+        else ("provisional" if on_missing == "provisional" else "insufficient")
+    )
+    return {
+        "status": status,
+        "required_roles": required_roles,
+        "covered_roles": sorted(covered_roles),
+        "missing_roles": missing_roles,
+        "authoritative_facts": list(contract.get("authoritative_facts", [])),
+        "provisional_fields": list(contract.get("provisional_fields", [])),
+        "prohibited_assumptions": list(contract.get("prohibited_assumptions", [])),
+        "on_missing": on_missing,
+    }
+
+
+def compile_topology_contract(asset: dict[str, Any]) -> dict[str, Any]:
+    topology = asset.get("topology", {}) or {}
+    required_components: list[dict[str, Any]] = []
+    provisional_components: list[dict[str, Any]] = []
+    for component in topology.get("components", []):
+        packet = {
+            "id": component["id"],
+            "count": component.get("count"),
+            "required": component.get("required", True),
+            "evidence": component.get("evidence", "authoritative"),
+        }
+        (
+            required_components
+            if packet["required"] and packet["evidence"] == "authoritative"
+            else provisional_components
+        ).append(packet)
+
+    relationships: list[dict[str, Any]] = []
+    provisional_relationships: list[dict[str, Any]] = []
+    for relationship in topology.get("relationships", []):
+        packet = {
+            "id": relationship["id"],
+            "type": relationship["type"],
+            "members": list(relationship["members"]),
+            "required": relationship.get("required", True),
+            "evidence": relationship.get("evidence", "authoritative"),
+        }
+        (
+            relationships
+            if packet["required"] and packet["evidence"] == "authoritative"
+            else provisional_relationships
+        ).append(packet)
+
+    return {
+        "required_components": required_components,
+        "provisional_components": provisional_components,
+        "relationships": relationships,
+        "provisional_relationships": provisional_relationships,
+        "prohibited_extra_components": bool(
+            topology.get("prohibited_extra_components", False)
+        ),
+    }
+
+
+def compile_required_hard_gates(
+    asset: dict[str, Any],
+    edit: dict[str, Any],
+) -> list[dict[str, Any]]:
+    gates: list[dict[str, Any]] = [
+        {
+            "id": "asset_identity",
+            "description": "The output remains the intended asset identity.",
+            "severity": "hard",
+            "category": "identity",
+            "failure_route": "major",
+        },
+        {
+            "id": "requested_change",
+            "description": str(edit.get("change", "requested change")),
+            "severity": "hard",
+            "category": "requested_change",
+            "failure_route": "minor",
+        },
+    ]
+    topology = compile_topology_contract(asset)
+    for component in topology["required_components"]:
+        component_id = component["id"]
+        gates.append({
+            "id": f"topology.component.{component_id}.present",
+            "description": f"Required component '{component_id}' is present.",
+            "severity": "hard",
+            "category": "topology_component",
+            "failure_route": "major",
+        })
+        if component.get("count") is not None:
+            gates.append({
+                "id": f"topology.component.{component_id}.count",
+                "description": (
+                    f"Required component '{component_id}' count is {component['count']}."
+                ),
+                "severity": "hard",
+                "category": "topology_component_count",
+                "failure_route": "major",
+            })
+    for relationship in topology["relationships"]:
+        gates.append({
+            "id": f"topology.relationship.{relationship['id']}",
+            "description": (
+                f"Relationship '{relationship['id']}' is {relationship['type']} "
+                f"across {', '.join(relationship['members'])}."
+            ),
+            "severity": "hard",
+            "category": "topology_relationship",
+            "failure_route": "major",
+        })
+    if topology["prohibited_extra_components"]:
+        gates.append({
+            "id": "topology.no_extra_components",
+            "description": "No unauthorized structural components are introduced.",
+            "severity": "hard",
+            "category": "topology_extra_components",
+            "failure_route": "major",
+        })
+
+    qa_contract = edit.get("qa_contract", {}) or {}
+    if qa_contract.get("enforce_lock_gates", False):
+        seen_ids = {gate["id"] for gate in gates}
+        lock_texts = [
+            *asset.get("locks", {}).get("hard", []),
+            *edit.get("preserve", {}).get("hard", []),
+        ]
+        for text in lock_texts:
+            gate_id = f"lock.{_slug(text)}"
+            if gate_id in seen_ids:
+                continue
+            seen_ids.add(gate_id)
+            gates.append({
+                "id": gate_id,
+                "description": text,
+                "severity": "hard",
+                "category": "preserve_lock",
+                "failure_route": "major",
+            })
+    return gates
+
+
+def enforce_qa_contract(run: dict[str, Any], qa: dict[str, Any]) -> None:
+    if not run.get("enforce_hard_gate_completeness", False):
+        return
+    required = run.get("required_hard_gates", []) or []
+    gate_by_id = {_gate_key(gate): gate for gate in qa.get("gates", [])}
+    missing = [gate["id"] for gate in required if gate["id"] not in gate_by_id]
+    if missing:
+        raise ValidationError(
+            "QA report is missing required hard gate(s): " + ", ".join(missing)
+        )
+
+    major_failed: list[str] = []
+    unverifiable: list[str] = []
+    for contract_gate in required:
+        gate = gate_by_id[contract_gate["id"]]
+        if gate.get("severity") != "hard":
+            raise ValidationError(
+                f"QA gate '{contract_gate['id']}' must have severity hard"
+            )
+        gate_status = gate.get("status")
+        if gate_status not in {"PASS", "FAIL", "NOT_VERIFIABLE"}:
+            raise ValidationError(
+                f"required hard gate '{contract_gate['id']}' must use "
+                "PASS, FAIL, or NOT_VERIFIABLE"
+            )
+        if gate_status == "NOT_VERIFIABLE":
+            unverifiable.append(contract_gate["id"])
+        if gate_status == "FAIL" and contract_gate.get("failure_route") == "major":
+            major_failed.append(contract_gate["id"])
+
+    status = qa.get("status")
+    if status in {"PASS", "PASS_WITH_NOTES"}:
+        non_pass = [
+            gate["id"]
+            for gate in required
+            if gate_by_id[gate["id"]].get("status") != "PASS"
+        ]
+        if non_pass:
+            raise ValidationError(
+                "PASS requires every required hard gate to PASS: "
+                + ", ".join(non_pass)
+            )
+    if unverifiable and status != "BLOCKED":
+        raise ValidationError(
+            "NOT_VERIFIABLE/NOT_CHECKED required hard gate(s) require BLOCKED: "
+            + ", ".join(unverifiable)
+        )
+    if major_failed and status == "REPAIR_MINOR":
+        raise ValidationError(
+            "core topology/identity hard-gate failures require "
+            "REGENERATE_MAJOR or BLOCKED: "
+            + ", ".join(major_failed)
+        )
+
+
+def make_complete_qa_stub(
+    run: dict[str, Any],
+    status: str = "PASS",
+) -> dict[str, Any]:
+    return {
+        "document_type": "qa_report",
+        "schema_version": 1,
+        "report_id": f"QA_{status}",
+        "asset_id": run["asset_id"],
+        "request_id": run["request_id"],
+        "status": status,
+        "summary": status,
+        "repair_directives": [],
+        "gates": [
+            {
+                "id": gate["id"],
+                "severity": "hard",
+                "status": "PASS",
+                "note": "",
+            }
+            for gate in run.get("required_hard_gates", [])
+        ],
+    }
 
 
 def validate_document(data: dict[str, Any], path: Path) -> None:
@@ -378,6 +720,16 @@ def cross_validate(documents: list[LoadedDocument]) -> None:
                 raise ValidationError(
                     f"{doc.path}: QA asset_id does not match linked edit request"
                 )
+            if request is not None:
+                asset = assets.get(request["asset_id"])
+                if asset is not None and asset.get("topology"):
+                    enforce_qa_contract(
+                        {
+                            "required_hard_gates": compile_required_hard_gates(asset, request),
+                            "enforce_hard_gate_completeness": True,
+                        },
+                        data,
+                    )
 
 
 def iter_toml_paths(inputs: Iterable[str]) -> list[Path]:

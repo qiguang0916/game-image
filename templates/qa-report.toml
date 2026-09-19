@@ -3,24 +3,30 @@ schema_version = 1
 report_id = "QA_001"
 asset_id = "ASSET_001"
 request_id = "EDIT_001"
-status = "PASS_WITH_NOTES"
-summary = "Example QA report."
+status = "PASS"
+summary = "All required hard gates were explicitly verified."
 repair_directives = []
 
 [[gates]]
-name = "asset_identity"
+id = "asset_identity"
 severity = "hard"
 status = "PASS"
 note = ""
 
 [[gates]]
-name = "requested_change"
+id = "requested_change"
 severity = "hard"
 status = "PASS"
 note = ""
 
 [[gates]]
-name = "lighting_continuity"
+id = "lock.overall_silhouette"
+severity = "hard"
+status = "PASS"
+note = ""
+
+[[gates]]
+id = "lighting_continuity"
 severity = "soft"
 status = "NOTE"
 note = "Minor non-blocking highlight drift."

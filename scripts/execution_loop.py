@@ -10,12 +10,16 @@ import argparse
 import json
 import sys
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from validate_project import (
     ValidationError,
+    compile_reference_sufficiency,
+    compile_required_hard_gates,
     cross_validate,
+    enforce_qa_contract,
     load_document,
     validate_document,
 )
@@ -29,6 +33,28 @@ STATES = {
     "ACCEPTED",
     "BLOCKED",
 }
+
+BLOCK_REASON_CODES = {
+    "host_native_imagegen_unavailable",
+    "host_native_imagegen_failed",
+    "host_native_imagegen_moderation_blocked",
+    "generated_result_missing",
+    "generated_result_unreadable",
+    "visual_inspection_unavailable",
+    "required_reference_missing",
+    "edit_target_missing",
+    "reference_unreadable",
+    "reference_image_invalid",
+    "reference_sufficiency_failed",
+    "reference_contract_invalid",
+    "repair_budget_exhausted",
+    "regeneration_budget_exhausted",
+    "qa_blocked",
+}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _execution_mode(operation: str) -> str:
@@ -65,6 +91,13 @@ def init_run(
         raise ValidationError("max_regeneration_passes must be an integer 0..3")
 
     operation = edit["operation"]
+    enforce_complete = bool(
+        asset.get("topology")
+        or (edit.get("qa_contract", {}) or {}).get(
+            "enforce_complete_hard_gates",
+            False,
+        )
+    )
     state = {
         "schema_version": 1,
         "run_id": run_id or f"{asset['asset_id']}__{edit['request_id']}",
@@ -80,12 +113,18 @@ def init_run(
         "execution_mode": _execution_mode(operation),
         "current_result_path": None,
         "last_qa": None,
+        "blocked": None,
+        "preflight": None,
+        "required_hard_gates": compile_required_hard_gates(asset, edit),
+        "enforce_hard_gate_completeness": enforce_complete,
+        "reference_sufficiency": compile_reference_sufficiency(asset, edit),
         "next_action": _next_action_for_ready(operation),
         "history": [
             {
                 "event": "initialized",
                 "state": "READY",
                 "operation": operation,
+                "at": _now(),
             }
         ],
     }
@@ -143,6 +182,9 @@ def validate_run_state(run: dict[str, Any]) -> None:
     last_qa = run.get("last_qa")
     if last_qa is not None and not isinstance(last_qa, dict):
         raise ValidationError("last_qa must be an object or null")
+    blocked = run.get("blocked")
+    if blocked is not None and not isinstance(blocked, dict):
+        raise ValidationError("blocked must be an object or null")
 
 
 def mark_generated(run: dict[str, Any], result_path: str) -> dict[str, Any]:
@@ -160,6 +202,7 @@ def mark_generated(run: dict[str, Any], result_path: str) -> dict[str, Any]:
     updated["state"] = "QA_PENDING"
     updated["current_result_path"] = result_path
     updated["last_qa"] = None
+    updated["blocked"] = None
     updated["next_action"] = "inspect_pixels_and_write_qa"
     updated["history"].append(
         {
@@ -168,6 +211,49 @@ def mark_generated(run: dict[str, Any], result_path: str) -> dict[str, Any]:
             "state": "QA_PENDING",
             "result_path": result_path,
             "iteration": updated["iteration"],
+            "at": _now(),
+        }
+    )
+    validate_run_state(updated)
+    return updated
+
+
+def mark_blocked(
+    run: dict[str, Any],
+    *,
+    reason_code: str,
+    action: str,
+    message: str,
+    retryable: bool,
+) -> dict[str, Any]:
+    validate_run_state(run)
+    if reason_code not in BLOCK_REASON_CODES:
+        raise ValidationError(f"unsupported blocked reason_code '{reason_code}'")
+    if not action.strip():
+        raise ValidationError("blocked action must not be empty")
+    if not isinstance(retryable, bool):
+        raise ValidationError("retryable must be boolean")
+
+    updated = deepcopy(run)
+    previous_state = updated["state"]
+    blocked = {
+        "reason_code": reason_code,
+        "action": action,
+        "message": message.strip()[:500],
+        "retryable": retryable,
+        "repair_passes": updated["repair_passes"],
+        "regeneration_passes": updated["regeneration_passes"],
+        "at": _now(),
+    }
+    updated["state"] = "BLOCKED"
+    updated["blocked"] = blocked
+    updated["next_action"] = "report_blocked"
+    updated["history"].append(
+        {
+            "event": "blocked",
+            "from_state": previous_state,
+            "state": "BLOCKED",
+            **blocked,
         }
     )
     validate_run_state(updated)
@@ -181,26 +267,18 @@ def apply_qa(
     validate_run_state(run)
     if run["state"] != "QA_PENDING":
         raise ValidationError(f"cannot apply QA while run is {run['state']}")
+    validate_document(qa, Path("qa.toml"))
     if qa["document_type"] != "qa_report":
         raise ValidationError("QA document must be qa_report")
     if qa["asset_id"] != run["asset_id"]:
         raise ValidationError("QA asset_id does not match run")
     if qa["request_id"] != run["request_id"]:
         raise ValidationError("QA request_id does not match run")
+    enforce_qa_contract(run, qa)
 
     updated = deepcopy(run)
     qa_status = qa["status"]
-    updated["last_qa"] = {
-        "document_type": "qa_report",
-        "schema_version": qa["schema_version"],
-        "report_id": qa["report_id"],
-        "asset_id": qa["asset_id"],
-        "request_id": qa["request_id"],
-        "status": qa_status,
-        "summary": qa.get("summary", ""),
-        "gates": deepcopy(qa.get("gates", [])),
-        "repair_directives": deepcopy(qa.get("repair_directives", [])),
-    }
+    updated["last_qa"] = deepcopy(qa)
 
     if qa_status in {"PASS", "PASS_WITH_NOTES"}:
         updated["state"] = "ACCEPTED"
@@ -216,6 +294,15 @@ def apply_qa(
         else:
             updated["state"] = "BLOCKED"
             updated["next_action"] = "report_repair_budget_exhausted"
+            updated["blocked"] = {
+                "reason_code": "repair_budget_exhausted",
+                "action": "visual_qa",
+                "message": "repair budget exhausted",
+                "retryable": False,
+                "repair_passes": updated["repair_passes"],
+                "regeneration_passes": updated["regeneration_passes"],
+                "at": _now(),
+            }
 
     elif qa_status == "REGENERATE_MAJOR":
         if (
@@ -230,10 +317,28 @@ def apply_qa(
         else:
             updated["state"] = "BLOCKED"
             updated["next_action"] = "report_regeneration_budget_exhausted"
+            updated["blocked"] = {
+                "reason_code": "regeneration_budget_exhausted",
+                "action": "visual_qa",
+                "message": "regeneration budget exhausted",
+                "retryable": False,
+                "repair_passes": updated["repair_passes"],
+                "regeneration_passes": updated["regeneration_passes"],
+                "at": _now(),
+            }
 
     elif qa_status == "BLOCKED":
         updated["state"] = "BLOCKED"
         updated["next_action"] = "report_qa_blocker"
+        updated["blocked"] = {
+            "reason_code": "qa_blocked",
+            "action": "visual_qa",
+            "message": qa.get("summary", "QA blocked"),
+            "retryable": False,
+            "repair_passes": updated["repair_passes"],
+            "regeneration_passes": updated["regeneration_passes"],
+            "at": _now(),
+        }
 
     else:
         raise ValidationError(f"unsupported QA status '{qa_status}'")
@@ -244,6 +349,7 @@ def apply_qa(
             "qa_report_id": qa["report_id"],
             "qa_status": qa_status,
             "state": updated["state"],
+            "at": _now(),
         }
     )
     validate_run_state(updated)
@@ -272,13 +378,39 @@ def init_from_paths(
     asset_path: Path,
     edit_path: Path,
     run_id: str | None = None,
+    *,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     asset_doc = load_document(asset_path)
     edit_doc = load_document(edit_path)
     validate_document(asset_doc.data, asset_doc.path)
     validate_document(edit_doc.data, edit_doc.path)
     cross_validate([asset_doc, edit_doc])
-    return init_run(asset_doc.data, edit_doc.data, run_id=run_id)
+    run = init_run(asset_doc.data, edit_doc.data, run_id=run_id)
+
+    from runtime_preflight import run_preflight
+
+    preflight = run_preflight(asset_path, edit_path, dry_run=dry_run)
+    run["preflight"] = preflight
+    if not preflight["can_execute"]:
+        reason = (
+            preflight["reason_codes"][0]
+            if preflight["reason_codes"]
+            else "reference_contract_invalid"
+        )
+        run = mark_blocked(
+            run,
+            reason_code=(
+                reason
+                if reason in BLOCK_REASON_CODES
+                else "reference_contract_invalid"
+            ),
+            action=run["next_action"],
+            message="runtime reference preflight failed",
+            retryable=True,
+        )
+        run["preflight"] = preflight
+    return run
 
 
 def apply_qa_from_path(
@@ -299,6 +431,11 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--edit", required=True, type=Path)
     init.add_argument("--output", required=True, type=Path)
     init.add_argument("--run-id")
+    init.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Skip concrete reference-file checks for tests/simulation only.",
+    )
 
     generated = sub.add_parser(
         "mark-generated",
@@ -314,6 +451,20 @@ def build_parser() -> argparse.ArgumentParser:
     qa.add_argument("--run", required=True, type=Path)
     qa.add_argument("--qa", required=True, type=Path)
 
+    blocked = sub.add_parser(
+        "mark-blocked",
+        help="Persist a host/runtime blocker without editing run JSON by hand.",
+    )
+    blocked.add_argument("--run", required=True, type=Path)
+    blocked.add_argument(
+        "--reason-code",
+        required=True,
+        choices=sorted(BLOCK_REASON_CODES),
+    )
+    blocked.add_argument("--action", required=True)
+    blocked.add_argument("--message", default="")
+    blocked.add_argument("--retryable", action="store_true")
+
     status = sub.add_parser("status", help="Print current run state.")
     status.add_argument("--run", required=True, type=Path)
 
@@ -326,7 +477,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "init":
-            run = init_from_paths(args.asset, args.edit, args.run_id)
+            run = init_from_paths(
+                args.asset,
+                args.edit,
+                args.run_id,
+                dry_run=args.dry_run,
+            )
             save_run(args.output, run)
         elif args.command == "mark-generated":
             run = load_run(args.run)
@@ -335,6 +491,15 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "apply-qa":
             run = load_run(args.run)
             run = apply_qa_from_path(run, args.qa)
+            save_run(args.run, run)
+        elif args.command == "mark-blocked":
+            run = mark_blocked(
+                load_run(args.run),
+                reason_code=args.reason_code,
+                action=args.action,
+                message=args.message,
+                retryable=args.retryable,
+            )
             save_run(args.run, run)
         elif args.command == "status":
             run = load_run(args.run)

@@ -13,11 +13,11 @@
   "execution_mode": "edit",
   "current_result_path": null,
   "last_qa": null,
+  "blocked": null,
+  "preflight": null,
+  "required_hard_gates": [],
+  "enforce_hard_gate_completeness": true,
+  "reference_sufficiency": null,
   "next_action": "invoke_imagegen_edit",
-  "history": [
-    {
-      "event": "initialized",
-      "state": "READY"
-    }
-  ]
+  "history": []
 }
