@@ -9,20 +9,37 @@ primary_master = "ASSEMBLED_MASTER"
 hard = [
   "overall silhouette",
   "major proportions",
-  "critical part count",
   "critical part positions",
   "camera/projection"
 ]
-soft = [
-  "lighting",
-  "background tone",
-  "micro-texture"
-]
+soft = ["lighting", "background tone", "micro-texture"]
 
 [qa]
 max_repair_passes = 2
 max_regeneration_passes = 1
 hard_gate_policy = "reject_on_any_failure"
+
+[topology]
+prohibited_extra_components = false
+
+[[topology.components]]
+id = "body"
+required = true
+count = 1
+evidence = "authoritative"
+
+[[topology.components]]
+id = "detail_part"
+required = true
+count = 2
+evidence = "authoritative"
+
+[[topology.relationships]]
+id = "detail_mounted_on_body"
+type = "mounted_on"
+members = ["detail_part", "body"]
+required = true
+evidence = "authoritative"
 
 [[references]]
 id = "ASSEMBLED_MASTER"
@@ -38,4 +55,4 @@ path = "references/ASSET_001_COMPONENT_MASTER.png"
 state = "approved"
 priority = 100
 roles = ["geometry", "interface"]
-notes = "Authoritative for the named component only."
+notes = "Authoritative only for the declared component/interface."
