@@ -198,7 +198,7 @@ def validate_edit_request(data: dict[str, Any], path: Path) -> None:
             f"{where}: reference_sufficiency.required_roles",
             allow_empty=True,
         )
-        ensure_string_list(
+        provisional_fields = ensure_string_list(
             sufficiency.get("provisional_fields", []),
             f"{where}: reference_sufficiency.provisional_fields",
             allow_empty=True,
@@ -212,6 +212,10 @@ def validate_edit_request(data: dict[str, Any], path: Path) -> None:
         if not isinstance(allow_provisional, bool):
             raise ValidationError(
                 f"{where}: reference_sufficiency.allow_provisional must be boolean"
+            )
+        if allow_provisional and not provisional_fields:
+            raise ValidationError(
+                f"{where}: provisional mode requires provisional_fields"
             )
 
     qa_contract = data.get("qa_contract", {})
