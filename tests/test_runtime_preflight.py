@@ -163,6 +163,23 @@ class RuntimePreflightTests(unittest.TestCase):
             self.assertTrue(result['can_execute'])
             self.assertEqual('dry_run', result['mode'])
 
+
+    def test_rejected_reference_becomes_blocked_contract_error(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            asset, edit = write_project(Path(td))
+            text = asset.read_text(encoding="utf-8")
+            text = text.replace(
+                'id = "SUPPORT"\npath = "references/support.png"\nstate = "approved"',
+                'id = "SUPPORT"\npath = "references/support.png"\nstate = "rejected"',
+            )
+            asset.write_text(text, encoding="utf-8")
+            result = runtime_preflight.run_preflight(asset, edit)
+            self.assertEqual("BLOCKED", result["status"])
+            self.assertIn(
+                "reference_contract_invalid",
+                result["reason_codes"],
+            )
+
     def test_real_init_blocks_before_ready_when_preflight_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             asset, edit = write_project(
