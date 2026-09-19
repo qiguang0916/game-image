@@ -84,6 +84,17 @@ class ValidateProjectTests(unittest.TestCase):
         with self.assertRaises(validator.ValidationError):
             validator.validate_document(data, Path("edit.toml"))
 
+    def test_provisional_mode_requires_declared_fields(self) -> None:
+        data = self._edit(reference_id="M", roles=["identity"])
+        data["reference_sufficiency"] = {
+            "required_roles": ["identity", "geometry"],
+            "allow_provisional": True,
+            "provisional_fields": [],
+            "prohibited_assumptions": [],
+        }
+        with self.assertRaises(validator.ValidationError):
+            validator.validate_document(data, Path("edit.toml"))
+
     def test_local_edit_requires_hard_preserve(self) -> None:
         data = self._edit(reference_id="M", roles=["identity"])
         data["preserve"]["hard"] = []
