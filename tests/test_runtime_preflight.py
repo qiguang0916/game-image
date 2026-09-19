@@ -113,6 +113,19 @@ class RuntimePreflightTests(unittest.TestCase):
             self.assertEqual("PASS", result["status"])
             self.assertTrue(result["dry_run"])
 
+    def test_dry_run_still_enforces_reference_sufficiency(self) -> None:
+        edit = self._edit()
+        edit["reference_sufficiency"]["required_roles"].append("interface")
+        with tempfile.TemporaryDirectory() as td:
+            result = runtime_preflight.run_preflight(
+                self._asset(), edit, Path(td), dry_run=True
+            )
+            self.assertEqual("BLOCKED", result["status"])
+            self.assertEqual(
+                "reference_sufficiency_failed",
+                result["reason_code"],
+            )
+
     def test_reference_sufficiency_reports_authoritative_and_prohibited(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
