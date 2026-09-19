@@ -10,6 +10,8 @@ from typing import Any
 
 from validate_project import (
     ValidationError,
+    compile_reference_sufficiency,
+    compile_topology_contract,
     cross_validate,
     load_document,
     validate_document,
@@ -85,6 +87,62 @@ def compile_brief(asset: dict[str, Any], edit: dict[str, Any]) -> str:
         ]
     )
     lines.extend(reference_lines or ["(none)"])
+
+    topology = compile_topology_contract(asset)
+    if (
+        topology["required_components"]
+        or topology["relationships"]
+        or topology["provisional_components"]
+        or topology["provisional_relationships"]
+    ):
+        lines.extend(["", "TOPOLOGY CONTRACT:"])
+        for component in topology["required_components"]:
+            count = component.get("count")
+            suffix = f" count={count}" if count is not None else ""
+            lines.append(
+                f"- REQUIRED COMPONENT: {component['id']}{suffix}"
+            )
+        for relationship in topology["relationships"]:
+            lines.append(
+                f"- REQUIRED RELATIONSHIP: {relationship['id']} | "
+                f"type={relationship['type']} | "
+                f"members={', '.join(relationship['members'])}"
+            )
+        for component in topology["provisional_components"]:
+            lines.append(
+                f"- PROVISIONAL COMPONENT: {component['id']}"
+            )
+        for relationship in topology["provisional_relationships"]:
+            lines.append(
+                f"- PROVISIONAL RELATIONSHIP: {relationship['id']}"
+            )
+        if topology["prohibited_extra_components"]:
+            lines.append(
+                "- No unauthorized extra structural components."
+            )
+
+    sufficiency = compile_reference_sufficiency(asset, edit)
+    if (
+        sufficiency["required_roles"]
+        or sufficiency["authoritative_facts"]
+        or sufficiency["provisional_fields"]
+        or sufficiency["prohibited_assumptions"]
+    ):
+        lines.extend(["", "REFERENCE SUFFICIENCY:"])
+        lines.append(f"- status: {sufficiency['status']}")
+        if sufficiency["required_roles"]:
+            lines.append(
+                "- required roles: "
+                + ", ".join(sufficiency["required_roles"])
+            )
+        for fact in sufficiency["authoritative_facts"]:
+            lines.append(f"- AUTHORITATIVE FACT: {fact}")
+        for field in sufficiency["provisional_fields"]:
+            lines.append(f"- PROVISIONAL / UNKNOWN: {field}")
+        for assumption in sufficiency["prohibited_assumptions"]:
+            lines.append(
+                f"- PROHIBITED ASSUMPTION: {assumption}"
+            )
 
     lines.extend(["", "HARD PRESERVE:"])
     lines.extend(f"- {item}" for item in hard_preserve)
