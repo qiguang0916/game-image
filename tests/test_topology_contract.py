@@ -64,10 +64,11 @@ class TopologyContractTests(unittest.TestCase):
             ],
         }
 
-    def test_expected_hard_gates_include_component_counts_and_relationships(self) -> None:
+    def test_expected_hard_gates_include_preserve_and_topology_contracts(self) -> None:
         gates = topology_contract.expected_hard_gates(
             self._asset(), self._edit()
         )
+        self.assertIn("identity", gates)
         self.assertIn("topology.component.base.count", gates)
         self.assertIn("topology.component.decorative_screw.count", gates)
         self.assertIn(
