@@ -8,6 +8,8 @@ Runtime preflight is the gate between valid project metadata and a real host ima
 2. **Dry-run orchestration** — pass `--dry-run`; intended only for repository examples/tests that intentionally omit binary images.
 3. **Real runtime preflight** — default for a real run; required before an image action.
 
+Dry-run skips real file I/O only. It still enforces reference-sufficiency logic and other deterministic contracts.
+
 ## Real checks
 
 For every selected production input, preflight verifies:
