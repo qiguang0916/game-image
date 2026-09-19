@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -64,6 +65,31 @@ class HostFailureTests(unittest.TestCase):
         )
         self.assertEqual("BLOCKED", blocked["state"])
         self.assertFalse(blocked["blocker"]["retryable"])
+
+    def test_missing_generated_result_blocks_formally(self) -> None:
+        run = execution_loop.init_run(self.asset, self.edit)
+        blocked = execution_loop._record_generated_cli(
+            run, "/definitely/missing/result.png", dry_run=False
+        )
+        self.assertEqual("BLOCKED", blocked["state"])
+        self.assertEqual(
+            "generated_result_missing",
+            blocked["blocker"]["reason_code"],
+        )
+
+    def test_invalid_generated_result_blocks_formally(self) -> None:
+        run = execution_loop.init_run(self.asset, self.edit)
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "bad.png"
+            path.write_text("not an image", encoding="utf-8")
+            blocked = execution_loop._record_generated_cli(
+                run, str(path), dry_run=False
+            )
+        self.assertEqual("BLOCKED", blocked["state"])
+        self.assertEqual(
+            "generated_result_unreadable",
+            blocked["blocker"]["reason_code"],
+        )
 
     def test_unknown_reason_code_is_rejected(self) -> None:
         run = execution_loop.init_run(self.asset, self.edit)
