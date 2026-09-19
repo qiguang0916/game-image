@@ -90,7 +90,7 @@ def _selected_reference_ids(edit: dict[str, Any]) -> list[str]:
     ]
 
 
-def _reference_sufficiency(
+def evaluate_reference_sufficiency(
     edit: dict[str, Any],
 ) -> dict[str, Any]:
     contract = edit.get("reference_sufficiency", {})
