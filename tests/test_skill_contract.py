@@ -39,6 +39,36 @@ class SkillContractTests(unittest.TestCase):
         ):
             self.assertIn(relative, text)
 
+    def test_visual_qa_skill_exposes_not_verifiable_contract(self) -> None:
+        text = (
+            ROOT / "skills/visual-qa/SKILL.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("NOT_VERIFIABLE", text)
+        self.assertIn("references/visual-qa-contract.md", text)
+
+    def test_execution_loop_skill_exposes_preflight_and_blocker_commands(self) -> None:
+        text = (
+            ROOT / "skills/execution-loop/SKILL.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("--dry-run", text)
+        self.assertIn("mark-blocked", text)
+        self.assertIn("references/runtime-preflight.md", text)
+        self.assertIn("references/host-failure-protocol.md", text)
+
+    def test_host_action_protocol_documents_v2_contract_fields(self) -> None:
+        text = (
+            ROOT / "references/host-action-protocol.md"
+        ).read_text(encoding="utf-8")
+        for term in (
+            "reference_sufficiency",
+            "authoritative_facts",
+            "provisional_fields",
+            "prohibited_assumptions",
+            "fallback_policy",
+            "required_hard_gates",
+        ):
+            self.assertIn(term, text)
+
 
 if __name__ == "__main__":
     unittest.main()
