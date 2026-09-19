@@ -130,6 +130,14 @@ def validate_topology(topology: Any, where: str) -> None:
         members = ensure_string_list(relationship.get("members"), f"{rwhere}: members")
         if len(members) < 2:
             raise ValidationError(f"{rwhere}: relationships require at least two members")
+        undeclared_members = [
+            member for member in members if member not in seen_components
+        ]
+        if undeclared_members:
+            raise ValidationError(
+                f"{rwhere}: relationship member(s) must be declared components: "
+                + ", ".join(undeclared_members)
+            )
         if not isinstance(relationship.get("required", True), bool):
             raise ValidationError(f"{rwhere}: required must be boolean")
         evidence = relationship.get("evidence", "authoritative")
@@ -542,7 +550,12 @@ def enforce_qa_contract(run: dict[str, Any], qa: dict[str, Any]) -> None:
                 f"QA gate '{contract_gate['id']}' must have severity hard"
             )
         gate_status = gate.get("status")
-        if gate_status in {"NOT_VERIFIABLE", "NOT_CHECKED"}:
+        if gate_status not in {"PASS", "FAIL", "NOT_VERIFIABLE"}:
+            raise ValidationError(
+                f"required hard gate '{contract_gate['id']}' must use "
+                "PASS, FAIL, or NOT_VERIFIABLE"
+            )
+        if gate_status == "NOT_VERIFIABLE":
             unverifiable.append(contract_gate["id"])
         if gate_status == "FAIL" and contract_gate.get("failure_route") == "major":
             major_failed.append(contract_gate["id"])
