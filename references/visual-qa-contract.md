@@ -20,14 +20,24 @@ A required hard gate may not be omitted.
 - A localized non-topology defect may use `REPAIR_MINOR`.
 - Backend/inspection inability uses `BLOCKED`, not a synthetic PASS.
 
-Required gates are derived from:
+Required hard gates are the de-duplicated union of:
 
-1. `edit_request.qa_contract.required_hard_gates`, and
-2. required topology components/relationships.
+1. asset-level `locks.hard`;
+2. edit-level `preserve.hard`;
+3. `edit_request.qa_contract.required_hard_gates`;
+4. required topology components/relationships.
+
+This means a field declared HARD PRESERVE cannot silently disappear from QA.
 
 ## Example
 
 ~~~toml
+[[gates]]
+name = "camera/projection"
+severity = "hard"
+status = "PASS"
+note = ""
+
 [[gates]]
 name = "topology.component.decorative_screw.count"
 severity = "hard"
