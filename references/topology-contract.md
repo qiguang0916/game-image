@@ -36,6 +36,8 @@ Supported relationship types:
 
 `integral`, `continuous`, `separate`, `mounted_on`, `enclosed_by`, `aligned_with`, `shared_centers`, `interface`.
 
+Every relationship member must first be declared in `topology.components`; unknown member IDs are rejected so a typo cannot silently become an authoritative structural fact.
+
 The validator checks the contract shape. The Host/Agent still performs the visual judgment.
 
 ## QA mapping
