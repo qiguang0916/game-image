@@ -9,22 +9,11 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-try:
-    import topology_contract
-except ModuleNotFoundError as exc:  # RED
-    topology_contract = None
-    IMPORT_ERROR = exc
-else:
-    IMPORT_ERROR = None
-
+import topology_contract
 import validate_project
 
 
 class TopologyContractTests(unittest.TestCase):
-    def setUp(self) -> None:
-        if topology_contract is None:
-            self.fail(f"topology_contract module missing: {IMPORT_ERROR}")
-
     def _asset(self) -> dict:
         return {
             "document_type": "asset_manifest",
@@ -76,7 +65,9 @@ class TopologyContractTests(unittest.TestCase):
         }
 
     def test_expected_hard_gates_include_component_counts_and_relationships(self) -> None:
-        gates = topology_contract.expected_hard_gates(self._asset(), self._edit())
+        gates = topology_contract.expected_hard_gates(
+            self._asset(), self._edit()
+        )
         self.assertIn("topology.component.base.count", gates)
         self.assertIn("topology.component.decorative_screw.count", gates)
         self.assertIn(
@@ -86,14 +77,77 @@ class TopologyContractTests(unittest.TestCase):
         self.assertIn("topology.no_forbidden_extra_components", gates)
 
     def test_different_asset_contract_is_not_knife_specific(self) -> None:
-        gates = topology_contract.expected_hard_gates(self._asset(), self._edit())
-        self.assertFalse(any("tang" in gate or "rivet" in gate for gate in gates))
+        gates = topology_contract.expected_hard_gates(
+            self._asset(), self._edit()
+        )
+        self.assertFalse(
+            any("tang" in gate or "rivet" in gate for gate in gates)
+        )
 
     def test_missing_required_topology_gate_invalidates_qa(self) -> None:
         required = topology_contract.expected_hard_gates(
             self._asset(), self._edit()
         )
-        qa = {
+        qa = self._qa_for(required)
+        qa["gates"].pop()
+        with self.assertRaises(validate_project.ValidationError):
+            topology_contract.validate_qa_completeness(required, qa)
+
+    def test_not_verifiable_required_hard_gate_cannot_pass(self) -> None:
+        required = topology_contract.expected_hard_gates(
+            self._asset(), self._edit()
+        )
+        qa = self._qa_for(required)
+        qa["gates"][0]["status"] = "NOT_VERIFIABLE"
+        with self.assertRaises(validate_project.ValidationError):
+            topology_contract.validate_qa_completeness(required, qa)
+
+    def test_required_component_count_fail_cannot_pass(self) -> None:
+        required = topology_contract.expected_hard_gates(
+            self._asset(), self._edit()
+        )
+        qa = self._qa_for(required)
+        gate = next(
+            item
+            for item in qa["gates"]
+            if item["name"] == "topology.component.decorative_screw.count"
+        )
+        gate["status"] = "FAIL"
+        with self.assertRaises(validate_project.ValidationError):
+            topology_contract.validate_qa_completeness(required, qa)
+
+    def test_integral_relationship_fail_cannot_pass(self) -> None:
+        asset = self._asset()
+        asset["topology"]["components"].extend(
+            [
+                {"id": "outer_shell", "required": True, "count": 1},
+                {"id": "inner_frame", "required": True, "count": 1},
+            ]
+        )
+        asset["topology"]["relationships"].append(
+            {
+                "id": "shell_frame_integral",
+                "type": "integral",
+                "members": ["outer_shell", "inner_frame"],
+                "required": True,
+            }
+        )
+        required = topology_contract.expected_hard_gates(
+            asset, self._edit()
+        )
+        qa = self._qa_for(required)
+        gate = next(
+            item
+            for item in qa["gates"]
+            if item["name"] == "topology.relationship.shell_frame_integral"
+        )
+        gate["status"] = "FAIL"
+        with self.assertRaises(validate_project.ValidationError):
+            topology_contract.validate_qa_completeness(required, qa)
+
+    @staticmethod
+    def _qa_for(required: list[str]) -> dict:
+        return {
             "document_type": "qa_report",
             "schema_version": 1,
             "report_id": "Q",
@@ -109,41 +163,9 @@ class TopologyContractTests(unittest.TestCase):
                     "status": "PASS",
                     "note": "",
                 }
-                for gate in required[:-1]
-            ],
-        }
-        with self.assertRaises(validate_project.ValidationError):
-            topology_contract.validate_qa_completeness(required, qa)
-
-    def test_not_verifiable_required_hard_gate_cannot_pass(self) -> None:
-        required = topology_contract.expected_hard_gates(
-            self._asset(), self._edit()
-        )
-        qa = {
-            "document_type": "qa_report",
-            "schema_version": 1,
-            "report_id": "Q",
-            "asset_id": "LAMP_001",
-            "request_id": "E",
-            "status": "PASS",
-            "summary": "",
-            "repair_directives": [],
-            "gates": [
-                {
-                    "name": gate,
-                    "severity": "hard",
-                    "status": (
-                        "NOT_VERIFIABLE"
-                        if gate == "topology.component.base.count"
-                        else "PASS"
-                    ),
-                    "note": "",
-                }
                 for gate in required
             ],
         }
-        with self.assertRaises(validate_project.ValidationError):
-            topology_contract.validate_qa_completeness(required, qa)
 
 
 if __name__ == "__main__":
