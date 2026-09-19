@@ -137,7 +137,7 @@ def run_preflight(
 ) -> dict[str, Any]:
     """Check real inputs before allowing a host image action."""
     base_dir = Path(base_dir)
-    sufficiency = _reference_sufficiency(edit)
+    sufficiency = evaluate_reference_sufficiency(edit)
 
     if dry_run:
         return {
