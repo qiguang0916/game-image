@@ -47,6 +47,10 @@ def validate_topology_schema(asset: dict[str, Any], where: str) -> None:
                 f"{cwhere}: duplicate component id '{component_id}'"
             )
         component_ids.add(component_id)
+        if component.get("required", False) and "count" not in component:
+            raise ValidationError(
+                f"{cwhere}: required component must declare count"
+            )
         count = component.get("count")
         if count is not None and (
             not isinstance(count, int) or count < 0
