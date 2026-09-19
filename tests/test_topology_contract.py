@@ -64,6 +64,12 @@ class TopologyContractTests(unittest.TestCase):
             ],
         }
 
+    def test_required_component_requires_explicit_count(self) -> None:
+        asset = self._asset()
+        del asset["topology"]["components"][0]["count"]
+        with self.assertRaises(validate_project.ValidationError):
+            topology_contract.validate_topology_schema(asset, "asset.toml")
+
     def test_expected_hard_gates_include_preserve_and_topology_contracts(self) -> None:
         gates = topology_contract.expected_hard_gates(
             self._asset(), self._edit()
