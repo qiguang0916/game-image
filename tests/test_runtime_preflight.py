@@ -11,13 +11,8 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-try:
-    import runtime_preflight
-except ModuleNotFoundError as exc:  # RED: module must be implemented.
-    runtime_preflight = None
-    IMPORT_ERROR = exc
-else:
-    IMPORT_ERROR = None
+import execution_loop
+import runtime_preflight
 
 
 PNG_1X1 = base64.b64decode(
@@ -26,10 +21,6 @@ PNG_1X1 = base64.b64decode(
 
 
 class RuntimePreflightTests(unittest.TestCase):
-    def setUp(self) -> None:
-        if runtime_preflight is None:
-            self.fail(f"runtime_preflight module missing: {IMPORT_ERROR}")
-
     def _asset(self) -> dict:
         return {
             "document_type": "asset_manifest",
@@ -139,6 +130,55 @@ class RuntimePreflightTests(unittest.TestCase):
                 ["hidden geometry"],
                 result["reference_sufficiency"]["prohibited_assumptions"],
             )
+
+    def test_missing_required_role_blocks(self) -> None:
+        edit = self._edit()
+        edit["reference_sufficiency"]["required_roles"].append("interface")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write_png(root, "refs/master.png")
+            self._write_png(root, "refs/support.png")
+            result = runtime_preflight.run_preflight(
+                self._asset(), edit, root
+            )
+            self.assertEqual("BLOCKED", result["status"])
+            self.assertEqual(
+                "reference_sufficiency_failed",
+                result["reason_code"],
+            )
+
+    def test_non_approved_support_reference_never_enters_runtime(self) -> None:
+        asset = self._asset()
+        asset["references"][1]["state"] = "draft"
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self._write_png(root, "refs/master.png")
+            self._write_png(root, "refs/support.png")
+            result = runtime_preflight.run_preflight(
+                asset, self._edit(), root
+            )
+            self.assertEqual("BLOCKED", result["status"])
+            self.assertEqual(
+                "required_reference_missing",
+                result["reason_code"],
+            )
+
+    def test_real_init_from_paths_blocks_when_example_images_are_absent(self) -> None:
+        asset_path = ROOT / "examples/KNIFE_001/asset.toml"
+        edit_path = (
+            ROOT
+            / "examples/KNIFE_001/edits/rivets-brushed-silver.toml"
+        )
+        run = execution_loop.init_from_paths(
+            asset_path,
+            edit_path,
+            workspace_root=ROOT / "examples/KNIFE_001",
+        )
+        self.assertEqual("BLOCKED", run["state"])
+        self.assertIn(
+            run["blocker"]["reason_code"],
+            {"edit_target_missing", "required_reference_missing"},
+        )
 
 
 if __name__ == "__main__":
