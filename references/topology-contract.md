@@ -25,6 +25,8 @@ members = ["shade", "arm"]
 required = true
 ~~~
 
+A required component must declare an explicit non-negative `count`.
+
 Supported relationship types:
 
 - `integral`
