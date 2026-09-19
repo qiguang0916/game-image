@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +31,24 @@ STATES = {
     "ACCEPTED",
     "BLOCKED",
 }
+
+HOST_BLOCK_REASON_CODES = {
+    "host_native_imagegen_unavailable",
+    "host_native_imagegen_failed",
+    "host_native_imagegen_moderation_blocked",
+    "generated_result_missing",
+    "generated_result_unreadable",
+    "visual_inspection_unavailable",
+    "required_reference_missing",
+    "edit_target_missing",
+    "reference_unreadable",
+    "reference_image_invalid",
+    "reference_sufficiency_failed",
+}
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _execution_mode(operation: str) -> str:
@@ -64,6 +84,11 @@ def init_run(
     if not isinstance(max_regenerations, int) or not 0 <= max_regenerations <= 3:
         raise ValidationError("max_regeneration_passes must be an integer 0..3")
 
+    from topology_contract import (
+        expected_hard_gates,
+        expected_topology_hard_gates,
+    )
+
     operation = edit["operation"]
     state = {
         "schema_version": 1,
@@ -80,6 +105,10 @@ def init_run(
         "execution_mode": _execution_mode(operation),
         "current_result_path": None,
         "last_qa": None,
+        "preflight": None,
+        "blocker": None,
+        "required_hard_gates": expected_hard_gates(asset, edit),
+        "topology_hard_gates": expected_topology_hard_gates(asset),
         "next_action": _next_action_for_ready(operation),
         "history": [
             {
@@ -144,6 +173,54 @@ def validate_run_state(run: dict[str, Any]) -> None:
     if last_qa is not None and not isinstance(last_qa, dict):
         raise ValidationError("last_qa must be an object or null")
 
+    blocker = run.get("blocker")
+    if blocker is not None and not isinstance(blocker, dict):
+        raise ValidationError("blocker must be an object or null")
+
+
+def mark_blocked(
+    run: dict[str, Any],
+    *,
+    reason_code: str,
+    action: str,
+    message: str,
+    retryable: bool,
+) -> dict[str, Any]:
+    validate_run_state(run)
+    if reason_code not in HOST_BLOCK_REASON_CODES:
+        raise ValidationError(f"unsupported blocker reason_code '{reason_code}'")
+    if run["state"] == "ACCEPTED":
+        raise ValidationError("cannot block an ACCEPTED run")
+
+    updated = deepcopy(run)
+    updated["state"] = "BLOCKED"
+    updated["next_action"] = "report_blocked"
+    updated["blocker"] = {
+        "reason_code": reason_code,
+        "action": action,
+        "message": message.strip(),
+        "retryable": bool(retryable),
+        "timestamp": _utc_now(),
+        "budget_snapshot": {
+            "repair_passes": updated["repair_passes"],
+            "max_repair_passes": updated["max_repair_passes"],
+            "regeneration_passes": updated["regeneration_passes"],
+            "max_regeneration_passes": updated["max_regeneration_passes"],
+        },
+    }
+    updated["history"].append(
+        {
+            "event": "blocked",
+            "state": "BLOCKED",
+            "reason_code": reason_code,
+            "action": action,
+            "retryable": bool(retryable),
+            "timestamp": updated["blocker"]["timestamp"],
+        }
+    )
+    validate_run_state(updated)
+    return updated
+
 
 def mark_generated(run: dict[str, Any], result_path: str) -> dict[str, Any]:
     validate_run_state(run)
@@ -160,6 +237,7 @@ def mark_generated(run: dict[str, Any], result_path: str) -> dict[str, Any]:
     updated["state"] = "QA_PENDING"
     updated["current_result_path"] = result_path
     updated["last_qa"] = None
+    updated["blocker"] = None
     updated["next_action"] = "inspect_pixels_and_write_qa"
     updated["history"].append(
         {
@@ -172,6 +250,21 @@ def mark_generated(run: dict[str, Any], result_path: str) -> dict[str, Any]:
     )
     validate_run_state(updated)
     return updated
+
+
+def _required_gate_statuses(
+    run: dict[str, Any],
+    qa: dict[str, Any],
+) -> dict[str, str]:
+    by_name = {
+        gate["name"]: gate.get("status")
+        for gate in qa.get("gates", [])
+    }
+    return {
+        name: by_name[name]
+        for name in run.get("required_hard_gates", [])
+        if name in by_name
+    }
 
 
 def apply_qa(
@@ -188,8 +281,38 @@ def apply_qa(
     if qa["request_id"] != run["request_id"]:
         raise ValidationError("QA request_id does not match run")
 
-    updated = deepcopy(run)
+    from topology_contract import validate_qa_completeness
+
+    validate_qa_completeness(
+        list(run.get("required_hard_gates", [])),
+        qa,
+    )
+
+    required_statuses = _required_gate_statuses(run, qa)
+    if any(
+        status == "NOT_VERIFIABLE"
+        for status in required_statuses.values()
+    ):
+        return mark_blocked(
+            run,
+            reason_code="visual_inspection_unavailable",
+            action="visual_qa",
+            message="A required hard gate was NOT_VERIFIABLE.",
+            retryable=False,
+        )
+
+    topology_names = set(run.get("topology_hard_gates", []))
+    topology_statuses = {
+        name: required_statuses.get(name)
+        for name in topology_names
+        if name in required_statuses
+    }
+
     qa_status = qa["status"]
+    if any(status == "FAIL" for status in topology_statuses.values()):
+        qa_status = "REGENERATE_MAJOR"
+
+    updated = deepcopy(run)
     updated["last_qa"] = {
         "document_type": "qa_report",
         "schema_version": qa["schema_version"],
@@ -197,6 +320,7 @@ def apply_qa(
         "asset_id": qa["asset_id"],
         "request_id": qa["request_id"],
         "status": qa_status,
+        "reported_status": qa["status"],
         "summary": qa.get("summary", ""),
         "gates": deepcopy(qa.get("gates", [])),
         "repair_directives": deepcopy(qa.get("repair_directives", [])),
@@ -216,6 +340,13 @@ def apply_qa(
         else:
             updated["state"] = "BLOCKED"
             updated["next_action"] = "report_repair_budget_exhausted"
+            updated["blocker"] = {
+                "reason_code": "repair_budget_exhausted",
+                "action": "visual_qa",
+                "message": "Repair budget exhausted.",
+                "retryable": False,
+                "timestamp": _utc_now(),
+            }
 
     elif qa_status == "REGENERATE_MAJOR":
         if (
@@ -230,10 +361,22 @@ def apply_qa(
         else:
             updated["state"] = "BLOCKED"
             updated["next_action"] = "report_regeneration_budget_exhausted"
+            updated["blocker"] = {
+                "reason_code": "regeneration_budget_exhausted",
+                "action": "visual_qa",
+                "message": "Regeneration budget exhausted.",
+                "retryable": False,
+                "timestamp": _utc_now(),
+            }
 
     elif qa_status == "BLOCKED":
-        updated["state"] = "BLOCKED"
-        updated["next_action"] = "report_qa_blocker"
+        return mark_blocked(
+            run,
+            reason_code="visual_inspection_unavailable",
+            action="visual_qa",
+            message=qa.get("summary", "Visual QA blocked."),
+            retryable=False,
+        )
 
     else:
         raise ValidationError(f"unsupported QA status '{qa_status}'")
@@ -243,6 +386,7 @@ def apply_qa(
             "event": "qa_applied",
             "qa_report_id": qa["report_id"],
             "qa_status": qa_status,
+            "reported_status": qa["status"],
             "state": updated["state"],
         }
     )
@@ -272,13 +416,41 @@ def init_from_paths(
     asset_path: Path,
     edit_path: Path,
     run_id: str | None = None,
+    *,
+    dry_run: bool = False,
+    workspace_root: Path | None = None,
 ) -> dict[str, Any]:
     asset_doc = load_document(asset_path)
     edit_doc = load_document(edit_path)
     validate_document(asset_doc.data, asset_doc.path)
     validate_document(edit_doc.data, edit_doc.path)
     cross_validate([asset_doc, edit_doc])
-    return init_run(asset_doc.data, edit_doc.data, run_id=run_id)
+
+    run = init_run(asset_doc.data, edit_doc.data, run_id=run_id)
+
+    from runtime_preflight import run_preflight
+
+    base_dir = workspace_root or asset_path.parent
+    preflight = run_preflight(
+        asset_doc.data,
+        edit_doc.data,
+        base_dir,
+        dry_run=dry_run,
+    )
+    run["preflight"] = preflight
+
+    if preflight["status"] == "BLOCKED":
+        run = mark_blocked(
+            run,
+            reason_code=preflight["reason_code"],
+            action=run["next_action"],
+            message=preflight.get(
+                "detail",
+                f"Runtime preflight blocked: {preflight['reason_code']}",
+            ),
+            retryable=False,
+        )
+    return run
 
 
 def apply_qa_from_path(
@@ -290,6 +462,47 @@ def apply_qa_from_path(
     return apply_qa(run, qa_doc.data)
 
 
+def _record_generated_cli(
+    run: dict[str, Any],
+    result: str,
+    *,
+    dry_run: bool,
+) -> dict[str, Any]:
+    if dry_run:
+        return mark_generated(run, result)
+
+    path = Path(result)
+    if not path.exists():
+        return mark_blocked(
+            run,
+            reason_code="generated_result_missing",
+            action=run["next_action"],
+            message=f"Generated result does not exist: {path}",
+            retryable=True,
+        )
+    if not path.is_file() or not os.access(path, os.R_OK):
+        return mark_blocked(
+            run,
+            reason_code="generated_result_unreadable",
+            action=run["next_action"],
+            message=f"Generated result is unreadable: {path}",
+            retryable=True,
+        )
+
+    from runtime_preflight import validate_image_file
+
+    valid, detail = validate_image_file(path)
+    if not valid:
+        return mark_blocked(
+            run,
+            reason_code="generated_result_unreadable",
+            action=run["next_action"],
+            message=f"Generated image is invalid: {detail}",
+            retryable=True,
+        )
+    return mark_generated(run, result)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -299,6 +512,16 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--edit", required=True, type=Path)
     init.add_argument("--output", required=True, type=Path)
     init.add_argument("--run-id")
+    init.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Skip real reference file checks; for tests/examples only.",
+    )
+    init.add_argument(
+        "--workspace-root",
+        type=Path,
+        help="Resolve reference paths relative to this directory.",
+    )
 
     generated = sub.add_parser(
         "mark-generated",
@@ -306,6 +529,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     generated.add_argument("--run", required=True, type=Path)
     generated.add_argument("--result", required=True)
+    generated.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Skip real result-file checks; for tests/examples only.",
+    )
 
     qa = sub.add_parser(
         "apply-qa",
@@ -313,6 +541,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     qa.add_argument("--run", required=True, type=Path)
     qa.add_argument("--qa", required=True, type=Path)
+
+    blocked = sub.add_parser(
+        "mark-blocked",
+        help="Persist a host/backend blocker without editing run JSON by hand.",
+    )
+    blocked.add_argument("--run", required=True, type=Path)
+    blocked.add_argument(
+        "--reason-code",
+        required=True,
+        choices=sorted(HOST_BLOCK_REASON_CODES),
+    )
+    blocked.add_argument("--action", required=True)
+    blocked.add_argument("--message", required=True)
+    blocked.add_argument("--retryable", action="store_true")
 
     status = sub.add_parser("status", help="Print current run state.")
     status.add_argument("--run", required=True, type=Path)
@@ -326,15 +568,35 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.command == "init":
-            run = init_from_paths(args.asset, args.edit, args.run_id)
+            run = init_from_paths(
+                args.asset,
+                args.edit,
+                args.run_id,
+                dry_run=args.dry_run,
+                workspace_root=args.workspace_root,
+            )
             save_run(args.output, run)
         elif args.command == "mark-generated":
             run = load_run(args.run)
-            run = mark_generated(run, args.result)
+            run = _record_generated_cli(
+                run,
+                args.result,
+                dry_run=args.dry_run,
+            )
             save_run(args.run, run)
         elif args.command == "apply-qa":
             run = load_run(args.run)
             run = apply_qa_from_path(run, args.qa)
+            save_run(args.run, run)
+        elif args.command == "mark-blocked":
+            run = load_run(args.run)
+            run = mark_blocked(
+                run,
+                reason_code=args.reason_code,
+                action=args.action,
+                message=args.message,
+                retryable=args.retryable,
+            )
             save_run(args.run, run)
         elif args.command == "status":
             run = load_run(args.run)
@@ -355,6 +617,7 @@ def main(argv: list[str] | None = None) -> int:
                     "iteration": run["iteration"],
                     "repair_passes": run["repair_passes"],
                     "regeneration_passes": run["regeneration_passes"],
+                    "blocker": run.get("blocker"),
                 },
                 ensure_ascii=False,
             )
