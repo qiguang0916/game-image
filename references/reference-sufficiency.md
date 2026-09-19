@@ -19,11 +19,15 @@ prohibited_assumptions = ["hidden interior geometry"]
 - `provisional_fields`: facts the host may discuss as unconfirmed, never as Master truth.
 - `prohibited_assumptions`: facts the host must not invent to complete the task.
 
+If `allow_provisional = true`, `provisional_fields` must explicitly name at least one provisional fact. Provisional mode may not be an empty escape hatch.
+
 Statuses:
 
 - `sufficient`: all required roles are covered.
 - `provisional`: coverage is incomplete but the contract explicitly allows provisional work.
 - `insufficient`: required evidence is missing and the run must block.
+
+Dry-run still evaluates this contract.
 
 ## Host packet
 
