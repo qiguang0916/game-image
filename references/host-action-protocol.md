@@ -1,109 +1,53 @@
 # Host Action Protocol
 
-The host action packet is the contract between deterministic game-image logic and the Agent/host that can actually call image tools.
+`scripts/next_action.py` is the deterministic boundary between game-image logic and the Host/Agent that can actually generate/edit/inspect images.
 
-Generate it with:
+## Common packet contract
 
-~~~bash
-python3 scripts/next_action.py \
-  --asset <asset.toml> \
-  --edit <edit.toml> \
-  --run <run.json>
-~~~
+When applicable, packets expose:
 
-## Why this exists
+- exact `edit_target`
+- selected `references` and role bindings
+- `operation`
+- `requested_delta`
+- `hard_preserve_gates` / `soft_preserve_gates`
+- structured `topology`
+- `reference_sufficiency`
+- `authoritative_facts`
+- `provisional_fields`
+- `prohibited_assumptions`
+- runtime `preflight`
+- remaining repair/regeneration `budgets`
+- `expected_post_action_transition`
 
-Without a host packet, an Agent has to re-infer every turn:
+The Host must not replace these facts with a new interpretation of the natural-language request.
 
-- generate or edit?
-- which image is the actual edit target?
-- which images are supporting references?
-- what does each reference control?
-- what prompt should be sent?
-- should the next step be QA, repair, regeneration, or delivery?
-
-The packet makes those decisions explicit and testable.
-
-## Packet actions
+## Actions
 
 ### imagegen_generate
 
-Use the host's native image generation capability.
-
-Fields:
-
-- `references`: selected approved support references.
-- `prompt`: authoritative compiled brief.
-- `after_success = mark_generated`.
+Generate a new image using packet references and authoritative prompt.
 
 ### imagegen_edit
 
-Use image editing, not fresh text-to-image.
+Modify exactly `edit_target`. Other references are supporting evidence only.
 
-Fields:
-
-- `edit_target`: exact image to modify.
-- `references`: support references, each with declared roles.
-- `prompt`: authoritative delta or repair brief.
-- `after_success = mark_generated`.
-
-The edit target and a support reference may point to the same file; their responsibilities are still different.
+For repair, the failed generated result becomes the edit target. For major regeneration, the approved original source becomes the edit target again.
 
 ### visual_qa
 
-The host must inspect real pixels.
-
-Fields:
-
-- `result_path`;
-- `comparison_references`;
-- `requested_change`;
-- `hard_gates`;
-- `soft_gates`;
-- allowed QA statuses.
-
-The Agent writes a QA TOML and applies it through `execution_loop.py apply-qa`.
+Inspect real pixels. The packet includes `required_hard_gates`; every one must appear in the QA report. See `visual-qa-contract.md`.
 
 ### deliver
 
-The run is accepted.
-
-Deliver `result_path`.
+The run is ACCEPTED. Deliver the current persisted result.
 
 ### report_blocked
 
-The run exhausted its bounded loop or hit an execution/inspection blocker.
+Stop image execution and surface the persisted blocker. Do not auto-switch provider/API/CLI.
 
-Do not silently continue regenerating.
+## OpenAI/Codex
 
-## Edit target semantics
+When `$imagegen` is available, follow the official skill and use its built-in image path. The packet supplies the edit target, references, and authoritative prompt; do not invent a competing prompt.
 
-For initial local/structural/variant edits, the edit request contains:
-
-~~~toml
-[execution]
-edit_target_reference_id = "ASSEMBLED_MASTER"
-~~~
-
-This is the image that must be modified.
-
-`reference_bindings` are support inputs and must not be mistaken for the edit target.
-
-For a repair pass, the edit target changes to the failed generated result. This is automatic in the host packet.
-
-For major regeneration, the host packet switches back to the approved base edit target. It must not keep editing the failed result.
-
-## OpenAI/Codex host behavior
-
-If `$imagegen` is available:
-
-1. read its official skill instructions;
-2. invoke the built-in image path;
-3. follow the host packet's action;
-4. use the packet's edit target and references;
-5. do not invent a second prompt;
-6. persist the selected result;
-7. mark-generated;
-8. request the next packet.
-
-The deterministic scripts do not call `image_gen` themselves.
+The deterministic scripts do not call image generation themselves.
