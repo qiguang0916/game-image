@@ -12,6 +12,7 @@ SCRIPTS = ROOT / 'scripts'
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+import execution_loop  # noqa: E402
 import runtime_preflight  # noqa: E402
 
 
@@ -161,6 +162,34 @@ class RuntimePreflightTests(unittest.TestCase):
             self.assertEqual('SKIPPED', result['status'])
             self.assertTrue(result['can_execute'])
             self.assertEqual('dry_run', result['mode'])
+
+    def test_real_init_blocks_before_ready_when_preflight_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            asset, edit = write_project(
+                Path(td),
+                support_exists=False,
+            )
+            run = execution_loop.init_from_paths(asset, edit)
+            self.assertEqual('BLOCKED', run['state'])
+            self.assertEqual(
+                'required_reference_missing',
+                run['blocked']['reason_code'],
+            )
+
+    def test_dry_run_init_preserves_legacy_ready_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            asset, edit = write_project(
+                Path(td),
+                support_exists=False,
+                target_exists=False,
+            )
+            run = execution_loop.init_from_paths(
+                asset,
+                edit,
+                dry_run=True,
+            )
+            self.assertEqual('READY', run['state'])
+            self.assertEqual('dry_run', run['preflight']['mode'])
 
 
 if __name__ == '__main__':
