@@ -143,7 +143,10 @@ def validate_asset_manifest(data: dict[str, Any], path: Path) -> None:
 
     from topology_contract import validate_topology_schema
 
-    validate_topology_schema(data, where)
+    try:
+        validate_topology_schema(data, where)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
 
 
 def validate_edit_request(data: dict[str, Any], path: Path) -> None:
@@ -443,7 +446,10 @@ def cross_validate(documents: list[LoadedDocument]) -> None:
             continue
         required = expected_hard_gates(asset, request)
         if required:
-            validate_qa_completeness(required, qa)
+            try:
+                validate_qa_completeness(required, qa)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
 
 
 def iter_toml_paths(inputs: Iterable[str]) -> list[Path]:
