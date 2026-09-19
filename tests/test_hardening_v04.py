@@ -230,6 +230,42 @@ class TopologyAndQaContractTests(unittest.TestCase):
         routed = execution_loop.apply_qa(run, qa)
         self.assertEqual("REPAIR_READY", routed["state"])
 
+
+    def test_topology_relationship_rejects_undeclared_members(self) -> None:
+        asset = asset_fixture()
+        asset["topology"]["relationships"][0]["members"] = [
+            "body",
+            "missing_panel",
+        ]
+        with self.assertRaises(validate_project.ValidationError):
+            validate_project.validate_document(
+                asset,
+                Path("asset.toml"),
+            )
+
+    def test_required_hard_gate_note_is_invalid(self) -> None:
+        asset = asset_fixture()
+        edit = edit_fixture()
+        run = execution_loop.init_run(asset, edit)
+        run = execution_loop.mark_generated(run, "out.png")
+        qa = validate_project.make_complete_qa_stub(
+            run,
+            status="REPAIR_MINOR",
+        )
+        requested = next(
+            gate for gate in qa["gates"]
+            if gate["id"] == "requested_change"
+        )
+        requested["status"] = "FAIL"
+        relation = next(
+            gate for gate in qa["gates"]
+            if gate["id"] == "topology.relationship.body_panel_integral"
+        )
+        relation["status"] = "NOTE"
+        qa["repair_directives"] = ["Correct only the requested finish."]
+        with self.assertRaises(validate_project.ValidationError):
+            execution_loop.apply_qa(run, qa)
+
 class HostFailureTests(unittest.TestCase):
     def test_imagegen_unavailable_persists_blocked_state(self) -> None:
         asset = asset_fixture()
