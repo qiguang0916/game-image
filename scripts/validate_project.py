@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -76,6 +77,12 @@ def _gate_key(gate: dict[str, Any], where: str = "gate") -> str:
     if not isinstance(key, str) or not key.strip():
         raise ValidationError(f"{where}: missing required field 'id' or 'name'")
     return key
+
+
+def _slug(value: str) -> str:
+    value = value.strip().lower()
+    value = re.sub(r"[^a-z0-9]+", "_", value)
+    return value.strip("_") or "gate"
 
 
 def validate_topology(topology: Any, where: str) -> None:
@@ -492,6 +499,26 @@ def compile_required_hard_gates(
             "category": "topology_extra_components",
             "failure_route": "major",
         })
+
+    qa_contract = edit.get("qa_contract", {}) or {}
+    if qa_contract.get("enforce_lock_gates", False):
+        seen_ids = {gate["id"] for gate in gates}
+        lock_texts = [
+            *asset.get("locks", {}).get("hard", []),
+            *edit.get("preserve", {}).get("hard", []),
+        ]
+        for text in lock_texts:
+            gate_id = f"lock.{_slug(text)}"
+            if gate_id in seen_ids:
+                continue
+            seen_ids.add(gate_id)
+            gates.append({
+                "id": gate_id,
+                "description": text,
+                "severity": "hard",
+                "category": "preserve_lock",
+                "failure_route": "major",
+            })
     return gates
 
 
