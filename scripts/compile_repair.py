@@ -26,6 +26,10 @@ def _dedupe(items: list[str]) -> list[str]:
     return result
 
 
+def _gate_key(gate: dict[str, Any]) -> str:
+    return str(gate.get("id") or gate.get("name") or "unspecified")
+
+
 def compile_repair_brief(
     asset: dict[str, Any],
     edit: dict[str, Any],
@@ -54,7 +58,7 @@ def compile_repair_brief(
         )
 
     failed_gates = [
-        gate["name"]
+        _gate_key(gate)
         for gate in qa.get("gates", [])
         if gate.get("status") not in {"PASS", "NOTE"}
     ]
