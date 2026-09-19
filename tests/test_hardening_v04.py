@@ -37,6 +37,12 @@ def asset_fixture(asset_id: str = 'PROP_001') -> dict:
                     'count': 2,
                     'evidence': 'authoritative',
                 },
+                {
+                    'id': 'panel',
+                    'required': True,
+                    'count': 1,
+                    'evidence': 'authoritative',
+                },
             ],
             'relationships': [
                 {
