@@ -139,6 +139,15 @@ def run_preflight(
     base_dir = Path(base_dir)
     sufficiency = evaluate_reference_sufficiency(edit)
 
+    if sufficiency["status"] == "insufficient":
+        return {
+            "status": "BLOCKED",
+            "dry_run": dry_run,
+            "reason_code": "reference_sufficiency_failed",
+            "checks": [],
+            "reference_sufficiency": sufficiency,
+        }
+
     if dry_run:
         return {
             "status": "PASS",
@@ -152,15 +161,6 @@ def run_preflight(
     selected_ids = _selected_reference_ids(edit)
     target_id = edit.get("execution", {}).get("edit_target_reference_id")
     checks: list[dict[str, Any]] = []
-
-    if sufficiency["status"] == "insufficient":
-        return {
-            "status": "BLOCKED",
-            "dry_run": False,
-            "reason_code": "reference_sufficiency_failed",
-            "checks": checks,
-            "reference_sufficiency": sufficiency,
-        }
 
     ordered_ids: list[str] = []
     if target_id:
