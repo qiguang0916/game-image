@@ -35,7 +35,13 @@ ALLOWED_QA_STATUSES = {
     "BLOCKED",
 }
 ALLOWED_GATE_SEVERITIES = {"hard", "soft"}
-ALLOWED_GATE_STATUSES = {"PASS", "FAIL", "NOTE", "NOT_CHECKED"}
+ALLOWED_GATE_STATUSES = {
+    "PASS",
+    "FAIL",
+    "NOTE",
+    "NOT_CHECKED",
+    "NOT_VERIFIABLE",
+}
 
 
 @dataclass(frozen=True)
@@ -135,6 +141,13 @@ def validate_asset_manifest(data: dict[str, Any], path: Path) -> None:
                 f"{where}: qa.max_regeneration_passes must be an integer 0..3"
             )
 
+    from topology_contract import validate_topology_schema
+
+    try:
+        validate_topology_schema(data, where)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+
 
 def validate_edit_request(data: dict[str, Any], path: Path) -> None:
     where = str(path)
@@ -150,8 +163,6 @@ def validate_edit_request(data: dict[str, Any], path: Path) -> None:
     if execution and not isinstance(execution, dict):
         raise ValidationError(f"{where}: execution must be a table")
     if operation in OPERATIONS_REQUIRING_BASE_EDIT_TARGET:
-        if not isinstance(execution, dict):
-            raise ValidationError(f"{where}: execution must be a table")
         require(
             execution,
             "edit_target_reference_id",
@@ -175,6 +186,51 @@ def validate_edit_request(data: dict[str, Any], path: Path) -> None:
         raise ValidationError(
             f"{where}: local_edit requires at least one hard preserve rule"
         )
+
+    sufficiency = data.get("reference_sufficiency", {})
+    if sufficiency:
+        if not isinstance(sufficiency, dict):
+            raise ValidationError(
+                f"{where}: reference_sufficiency must be a table"
+            )
+        ensure_string_list(
+            sufficiency.get("required_roles", []),
+            f"{where}: reference_sufficiency.required_roles",
+            allow_empty=True,
+        )
+        provisional_fields = ensure_string_list(
+            sufficiency.get("provisional_fields", []),
+            f"{where}: reference_sufficiency.provisional_fields",
+            allow_empty=True,
+        )
+        ensure_string_list(
+            sufficiency.get("prohibited_assumptions", []),
+            f"{where}: reference_sufficiency.prohibited_assumptions",
+            allow_empty=True,
+        )
+        allow_provisional = sufficiency.get("allow_provisional", False)
+        if not isinstance(allow_provisional, bool):
+            raise ValidationError(
+                f"{where}: reference_sufficiency.allow_provisional must be boolean"
+            )
+        if allow_provisional and not provisional_fields:
+            raise ValidationError(
+                f"{where}: provisional mode requires provisional_fields"
+            )
+
+    qa_contract = data.get("qa_contract", {})
+    if qa_contract:
+        if not isinstance(qa_contract, dict):
+            raise ValidationError(f"{where}: qa_contract must be a table")
+        required_gates = ensure_string_list(
+            qa_contract.get("required_hard_gates", []),
+            f"{where}: qa_contract.required_hard_gates",
+            allow_empty=True,
+        )
+        if len(set(required_gates)) != len(required_gates):
+            raise ValidationError(
+                f"{where}: qa_contract.required_hard_gates contains duplicates"
+            )
 
     bindings = data.get("reference_bindings", [])
     if operation != "create" and not bindings:
@@ -254,7 +310,7 @@ def validate_qa_report(data: dict[str, Any], path: Path) -> None:
 
     if status in {"REPAIR_MINOR", "REGENERATE_MAJOR"} and non_pass_gate_count == 0:
         raise ValidationError(
-            f"{where}: {status} requires at least one failed/not-checked gate"
+            f"{where}: {status} requires at least one failed/unverifiable gate"
         )
 
     directives = ensure_string_list(
@@ -297,6 +353,7 @@ def load_document(path: Path) -> LoadedDocument:
 def cross_validate(documents: list[LoadedDocument]) -> None:
     assets: dict[str, dict[str, Any]] = {}
     edits: dict[str, dict[str, Any]] = {}
+    qa_reports: list[LoadedDocument] = []
 
     for doc in documents:
         dtype = doc.data["document_type"]
@@ -314,70 +371,89 @@ def cross_validate(documents: list[LoadedDocument]) -> None:
                     f"duplicate edit request '{request_id}'"
                 )
             edits[request_id] = doc.data
+        elif dtype == "qa_report":
+            qa_reports.append(doc)
 
     for doc in documents:
         data = doc.data
-        dtype = data["document_type"]
+        if data["document_type"] != "edit_request":
+            continue
 
-        if dtype == "edit_request":
-            asset = assets.get(data["asset_id"])
-            if asset is None:
-                continue
+        asset = assets.get(data["asset_id"])
+        if asset is None:
+            continue
 
-            reference_by_id = {
-                ref["id"]: ref for ref in asset["references"]
-            }
-            bound_ids: set[str] = set()
+        reference_by_id = {
+            ref["id"]: ref for ref in asset["references"]
+        }
+        bound_ids: set[str] = set()
 
-            for binding in data.get("reference_bindings", []):
-                ref_id = binding["reference_id"]
-                bound_ids.add(ref_id)
-                ref = reference_by_id.get(ref_id)
-                if ref is None:
-                    raise ValidationError(
-                        f"{doc.path}: reference_binding '{ref_id}' is not in asset "
-                        f"'{data['asset_id']}'"
-                    )
-                if ref.get("state") != "approved":
-                    raise ValidationError(
-                        f"{doc.path}: reference_binding '{ref_id}' is not approved"
-                    )
-
-                declared_roles = set(ref.get("roles", []))
-                requested_roles = set(binding.get("roles", []))
-                undeclared = requested_roles - declared_roles
-                if undeclared:
-                    joined = ", ".join(sorted(undeclared))
-                    raise ValidationError(
-                        f"{doc.path}: reference_binding '{ref_id}' requests "
-                        f"undeclared role(s): {joined}"
-                    )
-
-            operation = data["operation"]
-            if operation in OPERATIONS_REQUIRING_BASE_EDIT_TARGET:
-                target_id = data["execution"]["edit_target_reference_id"]
-                target_ref = reference_by_id.get(target_id)
-                if target_ref is None:
-                    raise ValidationError(
-                        f"{doc.path}: edit target '{target_id}' is not in asset "
-                        f"'{data['asset_id']}'"
-                    )
-                if target_ref.get("state") != "approved":
-                    raise ValidationError(
-                        f"{doc.path}: edit target '{target_id}' is not approved"
-                    )
-                if target_id not in bound_ids:
-                    raise ValidationError(
-                        f"{doc.path}: edit target '{target_id}' must also appear "
-                        "in reference_bindings"
-                    )
-
-        elif dtype == "qa_report":
-            request = edits.get(data["request_id"])
-            if request is not None and request["asset_id"] != data["asset_id"]:
+        for binding in data.get("reference_bindings", []):
+            ref_id = binding["reference_id"]
+            bound_ids.add(ref_id)
+            ref = reference_by_id.get(ref_id)
+            if ref is None:
                 raise ValidationError(
-                    f"{doc.path}: QA asset_id does not match linked edit request"
+                    f"{doc.path}: reference_binding '{ref_id}' is not in asset "
+                    f"'{data['asset_id']}'"
                 )
+            if ref.get("state") != "approved":
+                raise ValidationError(
+                    f"{doc.path}: reference_binding '{ref_id}' is not approved"
+                )
+
+            declared_roles = set(ref.get("roles", []))
+            requested_roles = set(binding.get("roles", []))
+            undeclared = requested_roles - declared_roles
+            if undeclared:
+                joined = ", ".join(sorted(undeclared))
+                raise ValidationError(
+                    f"{doc.path}: reference_binding '{ref_id}' requests "
+                    f"undeclared role(s): {joined}"
+                )
+
+        operation = data["operation"]
+        if operation in OPERATIONS_REQUIRING_BASE_EDIT_TARGET:
+            target_id = data["execution"]["edit_target_reference_id"]
+            target_ref = reference_by_id.get(target_id)
+            if target_ref is None:
+                raise ValidationError(
+                    f"{doc.path}: edit target '{target_id}' is not in asset "
+                    f"'{data['asset_id']}'"
+                )
+            if target_ref.get("state") != "approved":
+                raise ValidationError(
+                    f"{doc.path}: edit target '{target_id}' is not approved"
+                )
+            if target_id not in bound_ids:
+                raise ValidationError(
+                    f"{doc.path}: edit target '{target_id}' must also appear "
+                    "in reference_bindings"
+                )
+
+    from topology_contract import (
+        expected_hard_gates,
+        validate_qa_completeness,
+    )
+
+    for qa_doc in qa_reports:
+        qa = qa_doc.data
+        request = edits.get(qa["request_id"])
+        if request is None:
+            continue
+        if request["asset_id"] != qa["asset_id"]:
+            raise ValidationError(
+                f"{qa_doc.path}: QA asset_id does not match linked edit request"
+            )
+        asset = assets.get(qa["asset_id"])
+        if asset is None:
+            continue
+        required = expected_hard_gates(asset, request)
+        if required:
+            try:
+                validate_qa_completeness(required, qa)
+            except ValueError as exc:
+                raise ValidationError(str(exc)) from exc
 
 
 def iter_toml_paths(inputs: Iterable[str]) -> list[Path]:

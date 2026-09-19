@@ -13,6 +13,10 @@
   "execution_mode": "edit",
   "current_result_path": null,
   "last_qa": null,
+  "preflight": null,
+  "blocker": null,
+  "required_hard_gates": [],
+  "topology_hard_gates": [],
   "next_action": "invoke_imagegen_edit",
   "history": [
     {

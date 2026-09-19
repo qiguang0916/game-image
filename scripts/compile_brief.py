@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from runtime_preflight import evaluate_reference_sufficiency
+from topology_contract import packet_topology
 from validate_project import (
     ValidationError,
     cross_validate,
@@ -58,6 +60,19 @@ def compile_brief(asset: dict[str, Any], edit: dict[str, Any]) -> str:
         ref = reference_by_id[edit_target_id]
         edit_target_line = f"{edit_target_id} | path={ref['path']}"
 
+    topology = packet_topology(asset)
+    sufficiency = evaluate_reference_sufficiency(edit)
+    prohibited_assumptions = list(
+        edit.get("reference_sufficiency", {}).get(
+            "prohibited_assumptions", []
+        )
+    )
+    provisional_fields = list(
+        edit.get("reference_sufficiency", {}).get(
+            "provisional_fields", []
+        )
+    )
+
     lines = [
         f"ASSET: {asset['asset_id']}",
         f"OPERATION: {edit['operation']}",
@@ -85,6 +100,50 @@ def compile_brief(asset: dict[str, Any], edit: dict[str, Any]) -> str:
         ]
     )
     lines.extend(reference_lines or ["(none)"])
+
+    lines.extend(["", "REFERENCE SUFFICIENCY:"])
+    lines.append(f"- status: {sufficiency['status']}")
+    if sufficiency["required_roles"]:
+        lines.append(
+            "- required_roles: " + ", ".join(sufficiency["required_roles"])
+        )
+    if sufficiency["missing_roles"]:
+        lines.append(
+            "- missing_roles: " + ", ".join(sufficiency["missing_roles"])
+        )
+
+    if topology["required_components"]:
+        lines.extend(["", "REQUIRED COMPONENTS:"])
+        for component in topology["required_components"]:
+            lines.append(
+                f"- {component['id']} | count={component['count']}"
+            )
+
+    if topology["structural_relationships"]:
+        lines.extend(["", "STRUCTURAL RELATIONSHIPS:"])
+        for relation in topology["structural_relationships"]:
+            members = ", ".join(relation["members"])
+            lines.append(
+                f"- {relation['id']} | type={relation['type']} | "
+                f"members={members}"
+            )
+
+    if topology["forbid_extra_components"]:
+        lines.extend(
+            [
+                "",
+                "TOPOLOGY BOUNDARY:",
+                "- Do not add undeclared structural components.",
+            ]
+        )
+
+    if provisional_fields:
+        lines.extend(["", "PROVISIONAL / UNKNOWN FIELDS:"])
+        lines.extend(f"- {item}" for item in provisional_fields)
+
+    if prohibited_assumptions:
+        lines.extend(["", "PROHIBITED ASSUMPTIONS:"])
+        lines.extend(f"- {item}" for item in prohibited_assumptions)
 
     lines.extend(["", "HARD PRESERVE:"])
     lines.extend(f"- {item}" for item in hard_preserve)

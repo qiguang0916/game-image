@@ -9,7 +9,6 @@ primary_master = "ASSEMBLED_MASTER"
 hard = [
   "overall silhouette",
   "major proportions",
-  "critical part count",
   "critical part positions",
   "camera/projection"
 ]
@@ -24,6 +23,25 @@ max_repair_passes = 2
 max_regeneration_passes = 1
 hard_gate_policy = "reject_on_any_failure"
 
+[topology]
+forbid_extra_components = true
+
+[[topology.components]]
+id = "body"
+required = true
+count = 1
+
+[[topology.components]]
+id = "decorative_fastener"
+required = true
+count = 3
+
+[[topology.relationships]]
+id = "fasteners_mounted_on_body"
+type = "mounted_on"
+members = ["decorative_fastener", "body"]
+required = true
+
 [[references]]
 id = "ASSEMBLED_MASTER"
 path = "references/ASSET_001_ASSEMBLED_MASTER.png"
@@ -36,6 +54,6 @@ notes = "Primary overall visual master."
 id = "COMPONENT_MASTER"
 path = "references/ASSET_001_COMPONENT_MASTER.png"
 state = "approved"
-priority = 100
+priority = 90
 roles = ["geometry", "interface"]
-notes = "Authoritative for the named component only."
+notes = "Authoritative only for the declared component/interface."

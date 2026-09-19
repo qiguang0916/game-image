@@ -12,6 +12,8 @@ from typing import Any
 from compile_brief import compile_brief
 from compile_repair import compile_repair_brief
 from execution_loop import load_run, validate_run_state
+from runtime_preflight import evaluate_reference_sufficiency
+from topology_contract import packet_topology
 from validate_project import (
     ValidationError,
     cross_validate,
@@ -33,6 +35,7 @@ def _reference_packets(
                 "reference_id": ref["id"],
                 "path": ref["path"],
                 "roles": list(binding["roles"]),
+                "state": ref["state"],
             }
         )
     return packets
@@ -54,7 +57,11 @@ def _base_edit_target(
     }
 
 
-def _merged_lock_list(asset: dict[str, Any], edit: dict[str, Any], key: str) -> list[str]:
+def _merged_lock_list(
+    asset: dict[str, Any],
+    edit: dict[str, Any],
+    key: str,
+) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
     for item in [
@@ -65,6 +72,50 @@ def _merged_lock_list(asset: dict[str, Any], edit: dict[str, Any], key: str) -> 
             seen.add(item)
             result.append(item)
     return result
+
+
+def _knowledge_packet(
+    asset: dict[str, Any],
+    edit: dict[str, Any],
+) -> dict[str, Any]:
+    topology = packet_topology(asset)
+    sufficiency_contract = edit.get("reference_sufficiency", {})
+
+    authoritative: list[dict[str, Any]] = []
+    for component in topology["required_components"]:
+        authoritative.append(
+            {
+                "kind": "component",
+                "id": component["id"],
+                "count": component["count"],
+            }
+        )
+    for relation in topology["structural_relationships"]:
+        authoritative.append(
+            {
+                "kind": "relationship",
+                **relation,
+            }
+        )
+
+    return {
+        "authoritative_facts": authoritative,
+        "provisional_fields": list(
+            sufficiency_contract.get("provisional_fields", [])
+        ),
+        "prohibited_assumptions": list(
+            sufficiency_contract.get("prohibited_assumptions", [])
+        ),
+    }
+
+
+def _budget_packet(run: dict[str, Any]) -> dict[str, int]:
+    return {
+        "repair_passes_used": run["repair_passes"],
+        "repair_passes_max": run["max_repair_passes"],
+        "regeneration_passes_used": run["regeneration_passes"],
+        "regeneration_passes_max": run["max_regeneration_passes"],
+    }
 
 
 def build_action_packet(
@@ -82,14 +133,33 @@ def build_action_packet(
     state = run["state"]
     references = _reference_packets(asset, edit)
     base_target = _base_edit_target(asset, edit)
+    hard_preserve = _merged_lock_list(asset, edit, "hard")
+    soft_preserve = _merged_lock_list(asset, edit, "soft")
+    topology = packet_topology(asset)
+    sufficiency = (
+        (run.get("preflight") or {}).get("reference_sufficiency")
+        or evaluate_reference_sufficiency(edit)
+    )
 
     packet: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": run["run_id"],
         "state": state,
         "asset_id": run["asset_id"],
         "request_id": run["request_id"],
         "backend": "host_native_imagegen",
+        "fallback_policy": "none",
+        "operation": edit["operation"],
+        "requested_delta": edit["change"],
+        "hard_preserve": hard_preserve,
+        "soft_preserve": soft_preserve,
+        "required_hard_gates": list(
+            run.get("required_hard_gates", [])
+        ),
+        "topology": topology,
+        "reference_sufficiency": sufficiency,
+        "knowledge": _knowledge_packet(asset, edit),
+        "budget": _budget_packet(run),
     }
 
     if state == "READY":
@@ -100,6 +170,7 @@ def build_action_packet(
                 "edit_target": base_target if mode == "edit" else None,
                 "references": references,
                 "prompt": compile_brief(asset, edit),
+                "expected_post_action_transition": "QA_PENDING",
                 "after_success": "mark_generated",
             }
         )
@@ -114,8 +185,13 @@ def build_action_packet(
                 "result_path": result_path,
                 "comparison_references": references,
                 "requested_change": edit["change"],
-                "hard_gates": _merged_lock_list(asset, edit, "hard"),
-                "soft_gates": _merged_lock_list(asset, edit, "soft"),
+                "hard_gates": hard_preserve,
+                "soft_gates": soft_preserve,
+                "allowed_gate_statuses": [
+                    "PASS",
+                    "FAIL",
+                    "NOT_VERIFIABLE",
+                ],
                 "allowed_statuses": [
                     "PASS",
                     "PASS_WITH_NOTES",
@@ -123,6 +199,10 @@ def build_action_packet(
                     "REGENERATE_MAJOR",
                     "BLOCKED",
                 ],
+                "expected_post_action_transition": (
+                    "ACCEPTED | REPAIR_READY | "
+                    "REGENERATE_READY | BLOCKED"
+                ),
                 "after_success": "apply_qa",
             }
         )
@@ -144,6 +224,7 @@ def build_action_packet(
                 "references": references,
                 "prompt": compile_repair_brief(asset, edit, qa),
                 "repair_pass": run["repair_passes"],
+                "expected_post_action_transition": "QA_PENDING",
                 "after_success": "mark_generated",
             }
         )
@@ -158,6 +239,7 @@ def build_action_packet(
                 "prompt": compile_brief(asset, edit),
                 "regeneration_pass": run["regeneration_passes"],
                 "restart_policy": "approved_source_not_failed_result",
+                "expected_post_action_transition": "QA_PENDING",
                 "after_success": "mark_generated",
             }
         )
@@ -171,6 +253,7 @@ def build_action_packet(
                 "action": "deliver",
                 "result_path": result_path,
                 "qa": run.get("last_qa"),
+                "expected_post_action_transition": "terminal",
             }
         )
 
@@ -178,9 +261,10 @@ def build_action_packet(
         packet.update(
             {
                 "action": "report_blocked",
-                "reason": run.get("next_action"),
+                "blocker": run.get("blocker"),
                 "qa": run.get("last_qa"),
                 "current_result_path": run.get("current_result_path"),
+                "expected_post_action_transition": "terminal",
             }
         )
 

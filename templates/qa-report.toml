@@ -7,6 +7,9 @@ status = "PASS_WITH_NOTES"
 summary = "Example QA report."
 repair_directives = []
 
+# Required hard gates use: PASS | FAIL | NOT_VERIFIABLE.
+# Every gate required by qa_contract/topology must be present.
+
 [[gates]]
 name = "asset_identity"
 severity = "hard"
@@ -24,3 +27,10 @@ name = "lighting_continuity"
 severity = "soft"
 status = "NOTE"
 note = "Minor non-blocking highlight drift."
+
+# Example when evidence cannot verify a required fact:
+# [[gates]]
+# name = "topology.relationship.some_required_relationship"
+# severity = "hard"
+# status = "NOT_VERIFIABLE"
+# note = "Approved references do not reveal this relationship."
