@@ -200,6 +200,36 @@ class TopologyAndQaContractTests(unittest.TestCase):
         )
 
 
+
+    def test_qa_contract_can_promote_preserve_locks_to_required_gates(self) -> None:
+        asset = asset_fixture()
+        edit = edit_fixture()
+        edit["qa_contract"] = {
+            "enforce_complete_hard_gates": True,
+            "enforce_lock_gates": True,
+        }
+        gates = validate_project.compile_required_hard_gates(asset, edit)
+        ids = {gate["id"] for gate in gates}
+        self.assertIn("lock.overall_silhouette", ids)
+
+    def test_localized_requested_change_failure_can_repair(self) -> None:
+        asset = asset_fixture()
+        edit = edit_fixture()
+        run = execution_loop.init_run(asset, edit)
+        run = execution_loop.mark_generated(run, "out.png")
+        qa = validate_project.make_complete_qa_stub(
+            run,
+            status="REPAIR_MINOR",
+        )
+        requested = next(
+            gate for gate in qa["gates"]
+            if gate["id"] == "requested_change"
+        )
+        requested["status"] = "FAIL"
+        qa["repair_directives"] = ["Correct only the requested finish."]
+        routed = execution_loop.apply_qa(run, qa)
+        self.assertEqual("REPAIR_READY", routed["state"])
+
 class HostFailureTests(unittest.TestCase):
     def test_imagegen_unavailable_persists_blocked_state(self) -> None:
         asset = asset_fixture()
