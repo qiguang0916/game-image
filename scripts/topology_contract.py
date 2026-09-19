@@ -109,6 +109,16 @@ def expected_hard_gates(
     result: list[str] = []
     seen: set[str] = set()
 
+    for gate in asset.get("locks", {}).get("hard", []):
+        if gate not in seen:
+            seen.add(gate)
+            result.append(gate)
+
+    for gate in edit.get("preserve", {}).get("hard", []):
+        if gate not in seen:
+            seen.add(gate)
+            result.append(gate)
+
     for gate in edit.get("qa_contract", {}).get(
         "required_hard_gates", []
     ):
