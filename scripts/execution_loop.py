@@ -288,30 +288,7 @@ def apply_qa(
         qa,
     )
 
-    required_statuses = _required_gate_statuses(run, qa)
-    if any(
-        status == "NOT_VERIFIABLE"
-        for status in required_statuses.values()
-    ):
-        return mark_blocked(
-            run,
-            reason_code="visual_inspection_unavailable",
-            action="visual_qa",
-            message="A required hard gate was NOT_VERIFIABLE.",
-            retryable=False,
-        )
-
-    topology_names = set(run.get("topology_hard_gates", []))
-    topology_statuses = {
-        name: required_statuses.get(name)
-        for name in topology_names
-        if name in required_statuses
-    }
-
     qa_status = qa["status"]
-    if any(status == "FAIL" for status in topology_statuses.values()):
-        qa_status = "REGENERATE_MAJOR"
-
     updated = deepcopy(run)
     updated["last_qa"] = {
         "document_type": "qa_report",
@@ -325,6 +302,30 @@ def apply_qa(
         "gates": deepcopy(qa.get("gates", [])),
         "repair_directives": deepcopy(qa.get("repair_directives", [])),
     }
+
+    required_statuses = _required_gate_statuses(run, qa)
+    if any(
+        status == "NOT_VERIFIABLE"
+        for status in required_statuses.values()
+    ):
+        return mark_blocked(
+            updated,
+            reason_code="visual_inspection_unavailable",
+            action="visual_qa",
+            message="A required hard gate was NOT_VERIFIABLE.",
+            retryable=False,
+        )
+
+    topology_names = set(run.get("topology_hard_gates", []))
+    topology_statuses = {
+        name: required_statuses.get(name)
+        for name in topology_names
+        if name in required_statuses
+    }
+
+    if any(status == "FAIL" for status in topology_statuses.values()):
+        qa_status = "REGENERATE_MAJOR"
+        updated["last_qa"]["status"] = qa_status
 
     if qa_status in {"PASS", "PASS_WITH_NOTES"}:
         updated["state"] = "ACCEPTED"
@@ -371,7 +372,7 @@ def apply_qa(
 
     elif qa_status == "BLOCKED":
         return mark_blocked(
-            run,
+            updated,
             reason_code="visual_inspection_unavailable",
             action="visual_qa",
             message=qa.get("summary", "Visual QA blocked."),
